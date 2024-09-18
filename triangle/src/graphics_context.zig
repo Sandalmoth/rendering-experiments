@@ -16,6 +16,13 @@ const apis: []const vk.ApiInfo = &.{
         },
         .instance_commands = .{
             .destroyInstance = true,
+            .enumeratePhysicalDevices = true,
+            .enumerateDeviceExtensionProperties = true,
+            .getPhysicalDeviceProperties = true,
+            .getPhysicalDeviceMemoryProperties = true,
+            .getPhysicalDeviceQueueFamilyProperties = true,
+            .getPhysicalDeviceSurfaceSupportKHR = true,
+            .destroySurfaceKHR = true,
         },
         .device_commands = .{},
     },
@@ -29,7 +36,6 @@ const instance_extensions = [_][*:0]const u8{
 };
 
 const device_extensions = [_][*:0]const u8{
-    "VK_KHR_surface", // this should fail i think
     "VK_KHR_swapchain",
 };
 
@@ -65,6 +71,7 @@ extern fn glfwCreateWindowSurface(
     surface: *vk.SurfaceKHR,
 ) vk.Result;
 
+// global state section
 var alloc: std.mem.Allocator = undefined;
 var frame_arena: std.heap.ArenaAllocator = undefined;
 var frame_alloc: std.mem.Allocator = undefined;
@@ -73,7 +80,10 @@ var vkb: BaseDispatch = undefined;
 var instance: Instance = undefined;
 var device: Device = undefined;
 
-pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8) !void {
+var surface: vk.SurfaceKHR = undefined;
+// end global state section
+
+pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8, window: *glfw.Window) !void {
     alloc = _alloc;
     frame_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     errdefer frame_arena.deinit();
@@ -82,11 +92,16 @@ pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8) !void {
 
     try initInstance(app_name);
     errdefer deinitInstance();
+    try createSurface(window);
+    errdefer destroySurface();
+    const physical_device_candidate = try pickPhysicalDevice();
+    _ = physical_device_candidate;
 
     _ = frame_arena.reset(.retain_capacity);
 }
 
 pub fn deinit() void {
+    destroySurface();
     deinitInstance();
     frame_arena.deinit();
 }
@@ -109,7 +124,6 @@ fn initInstance(app_name: [*:0]const u8) !void {
         )) continue :outer;
         try all_extensions.append(ext1);
     }
-    for (all_extensions.items) |ext| std.debug.print("{s}\n", .{std.mem.sliceTo(ext, 0)});
     if (!try checkInstanceExtensionSupport(all_extensions.items)) {
         return error.UnsupportedInstanceExtension;
     }
@@ -143,7 +157,6 @@ fn deinitInstance() void {
 
 fn checkInstanceExtensionSupport(required_exts: []const [*:0]const u8) !bool {
     const available_exts = try vkb.enumerateInstanceExtensionPropertiesAlloc(null, frame_alloc);
-    defer frame_alloc.free(available_exts);
 
     for (required_exts) |req| {
         const req_name = std.mem.sliceTo(req, 0);
@@ -166,7 +179,6 @@ fn checkInstanceExtensionSupport(required_exts: []const [*:0]const u8) !bool {
 
 fn checkLayerSupport(required_layers: []const [*:0]const u8) !bool {
     const available_layers = try vkb.enumerateInstanceLayerPropertiesAlloc(frame_alloc);
-    defer frame_alloc.free(available_layers);
 
     for (required_layers) |req| {
         const req_name = std.mem.sliceTo(req, 0);
@@ -181,6 +193,153 @@ fn checkLayerSupport(required_layers: []const [*:0]const u8) !bool {
 
         if (!supported) {
             log.err("Unsupported layer: {s}", .{req_name});
+            return false;
+        }
+    }
+    return true;
+}
+
+fn createSurface(window: *glfw.Window) !void {
+    const success = glfwCreateWindowSurface(instance.handle, window, null, &surface);
+    if (success != .success) return error.SurfaceInitFailed;
+}
+
+fn destroySurface() void {
+    instance.destroySurfaceKHR(surface, null);
+}
+
+const PhysicalDeviceCandidate = struct {
+    device: vk.PhysicalDevice,
+    properties: vk.PhysicalDeviceProperties,
+    memory_properties: vk.PhysicalDeviceMemoryProperties,
+
+    graphics_queue_family: u32,
+    present_queue_family: u32,
+
+    /// pick the discrete_gpu with the most memory
+    fn cmp(ctx: void, a: PhysicalDeviceCandidate, b: PhysicalDeviceCandidate) bool {
+        _ = ctx;
+        const device_cmp = cmpDeviceType(a, b);
+        if (device_cmp != 0) return device_cmp > 0;
+        const memory_cmp = cmpMemory(a, b);
+        if (memory_cmp != 0) return memory_cmp > 0;
+
+        return true;
+    }
+
+    fn cmpDeviceType(a: PhysicalDeviceCandidate, b: PhysicalDeviceCandidate) i32 {
+        const dta: i32 = switch (a.properties.device_type) {
+            .discrete_gpu => 0,
+            .integrated_gpu, .virtual_gpu => 1,
+            else => 999,
+        };
+        const dtb: i32 = switch (b.properties.device_type) {
+            .discrete_gpu => 0,
+            .integrated_gpu, .virtual_gpu => 1,
+            else => 999,
+        };
+        return dtb - dta;
+    }
+
+    fn cmpMemory(a: PhysicalDeviceCandidate, b: PhysicalDeviceCandidate) i64 {
+        var ha: i64 = 0;
+        for (a.memory_properties.memory_heaps[0..a.memory_properties.memory_heap_count]) |heap| {
+            if (!heap.flags.device_local_bit) continue;
+            ha += @intCast(heap.size);
+        }
+        var hb: i64 = 0;
+        for (b.memory_properties.memory_heaps[0..b.memory_properties.memory_heap_count]) |heap| {
+            if (!heap.flags.device_local_bit) continue;
+            hb += @intCast(heap.size);
+        }
+        return ha - hb;
+    }
+};
+
+fn pickPhysicalDevice() !PhysicalDeviceCandidate {
+    const devices = try instance.enumeratePhysicalDevicesAlloc(frame_alloc);
+    var candidates = std.ArrayList(PhysicalDeviceCandidate).init(frame_alloc);
+    for (devices) |dev| {
+        const properties = instance.getPhysicalDeviceProperties(dev);
+        const memory_properties = instance.getPhysicalDeviceMemoryProperties(dev);
+
+        if (!try checkDeviceExtensionSupport(dev)) {
+            log.info(
+                "Did not pick {s}: Unsupported device extensions",
+                .{std.mem.sliceTo(&properties.device_name, 0)},
+            );
+            continue;
+        }
+
+        var graphics_queue_family: ?u32 = null;
+        var present_queue_family: ?u32 = null;
+        const queue_families = try instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(
+            dev,
+            frame_alloc,
+        );
+        for (queue_families, 0..) |family, i| {
+            if (graphics_queue_family == null and
+                family.queue_flags.graphics_bit) graphics_queue_family = @intCast(i);
+            if (present_queue_family == null and
+                try instance.getPhysicalDeviceSurfaceSupportKHR(
+                dev,
+                @intCast(i),
+                surface,
+            ) == vk.TRUE) present_queue_family = @intCast(i);
+        }
+
+        if (graphics_queue_family == null) {
+            log.info(
+                "Did not pick {s}: No graphics queue",
+                .{std.mem.sliceTo(&properties.device_name, 0)},
+            );
+            continue;
+        }
+        if (present_queue_family == null) {
+            log.info(
+                "Did not pick {s}: No present queue",
+                .{std.mem.sliceTo(&properties.device_name, 0)},
+            );
+            continue;
+        }
+
+        try candidates.append(.{
+            .device = dev,
+            .properties = properties,
+            .memory_properties = memory_properties,
+            .graphics_queue_family = graphics_queue_family.?,
+            .present_queue_family = present_queue_family.?,
+        });
+    }
+
+    if (candidates.items.len == 0) {
+        log.err("No compatible physical device", .{});
+        return error.NoCompatiblePhysicalDevice;
+    }
+    std.sort.insertion(PhysicalDeviceCandidate, candidates.items, {}, PhysicalDeviceCandidate.cmp);
+    return candidates.items[0];
+}
+
+fn checkDeviceExtensionSupport(dev: vk.PhysicalDevice) !bool {
+    const available_exts = try instance.enumerateDeviceExtensionPropertiesAlloc(
+        dev,
+        null,
+        frame_alloc,
+    );
+
+    for (device_extensions) |req| {
+        const req_name = std.mem.sliceTo(req, 0);
+        var supported = false;
+
+        for (available_exts) |ava| {
+            const ava_name = std.mem.sliceTo(&ava.extension_name, 0);
+            if (!std.mem.eql(u8, req_name, ava_name)) continue;
+            supported = true;
+            break;
+        }
+
+        if (!supported) {
+            log.err("Unsupported instance extension: {s}", .{req_name});
             return false;
         }
     }

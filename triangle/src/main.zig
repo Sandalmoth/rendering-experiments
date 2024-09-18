@@ -20,7 +20,7 @@ pub fn main() !void {
     const window = try glfw.Window.create(1320, 720, "triangle", null);
     defer window.destroy();
 
-    try gctx.init(alloc, app_name);
+    try gctx.init(alloc, app_name, window);
     defer gctx.deinit();
 
     while (!window.shouldClose()) {
