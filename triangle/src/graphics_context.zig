@@ -20,11 +20,17 @@ const apis: []const vk.ApiInfo = &.{
             .enumerateDeviceExtensionProperties = true,
             .getPhysicalDeviceProperties = true,
             .getPhysicalDeviceMemoryProperties = true,
+            .getPhysicalDeviceFeatures = true,
             .getPhysicalDeviceQueueFamilyProperties = true,
             .getPhysicalDeviceSurfaceSupportKHR = true,
             .destroySurfaceKHR = true,
+            .createDevice = true,
+            .getDeviceProcAddr = true,
         },
-        .device_commands = .{},
+        .device_commands = .{
+            .destroyDevice = true,
+            .getDeviceQueue = true,
+        },
     },
     // vk.features.version_1_0,
 };
@@ -35,15 +41,17 @@ const instance_extensions = [_][*:0]const u8{
     "VK_KHR_surface",
 };
 
-const device_extensions = [_][*:0]const u8{
-    "VK_KHR_swapchain",
-};
-
 const layers = [_][*:0]const u8{};
 const validation_layers = [_][*:0]const u8{
     "VK_LAYER_KHRONOS_validation",
 };
 const enable_validation = @import("builtin").mode == .Debug;
+
+const device_extensions = [_][*:0]const u8{
+    "VK_KHR_swapchain",
+};
+
+const device_features = vk.PhysicalDeviceFeatures{};
 // end config section
 
 const BaseDispatch = vk.BaseWrapper(apis);
@@ -81,6 +89,13 @@ var instance: Instance = undefined;
 var device: Device = undefined;
 
 var surface: vk.SurfaceKHR = undefined;
+var physical_device: vk.PhysicalDevice = undefined;
+var physical_device_properties: vk.PhysicalDeviceProperties = undefined;
+var physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties = undefined;
+var physical_device_features: vk.PhysicalDeviceFeatures = undefined;
+
+var graphics_queue: Queue = undefined;
+var present_queue: Queue = undefined;
 // end global state section
 
 pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8, window: *glfw.Window) !void {
@@ -95,12 +110,14 @@ pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8, window: *glfw.Wi
     try createSurface(window);
     errdefer destroySurface();
     const physical_device_candidate = try pickPhysicalDevice();
-    _ = physical_device_candidate;
+    try initDevice(physical_device_candidate);
+    errdefer deinitDevice();
 
     _ = frame_arena.reset(.retain_capacity);
 }
 
 pub fn deinit() void {
+    deinitDevice();
     destroySurface();
     deinitInstance();
     frame_arena.deinit();
@@ -212,6 +229,7 @@ const PhysicalDeviceCandidate = struct {
     device: vk.PhysicalDevice,
     properties: vk.PhysicalDeviceProperties,
     memory_properties: vk.PhysicalDeviceMemoryProperties,
+    features: vk.PhysicalDeviceFeatures,
 
     graphics_queue_family: u32,
     present_queue_family: u32,
@@ -262,6 +280,7 @@ fn pickPhysicalDevice() !PhysicalDeviceCandidate {
     for (devices) |dev| {
         const properties = instance.getPhysicalDeviceProperties(dev);
         const memory_properties = instance.getPhysicalDeviceMemoryProperties(dev);
+        const features = instance.getPhysicalDeviceFeatures(dev);
 
         if (!try checkDeviceExtensionSupport(dev)) {
             log.info(
@@ -270,6 +289,8 @@ fn pickPhysicalDevice() !PhysicalDeviceCandidate {
             );
             continue;
         }
+
+        // TODO check required features
 
         var graphics_queue_family: ?u32 = null;
         var present_queue_family: ?u32 = null;
@@ -307,6 +328,7 @@ fn pickPhysicalDevice() !PhysicalDeviceCandidate {
             .device = dev,
             .properties = properties,
             .memory_properties = memory_properties,
+            .features = features,
             .graphics_queue_family = graphics_queue_family.?,
             .present_queue_family = present_queue_family.?,
         });
@@ -344,4 +366,63 @@ fn checkDeviceExtensionSupport(dev: vk.PhysicalDevice) !bool {
         }
     }
     return true;
+}
+
+const Queue = struct {
+    handle: vk.Queue,
+    family: u32,
+
+    fn init(family: u32) Queue {
+        return .{
+            .handle = device.getDeviceQueue(family, 0),
+            .family = family,
+        };
+    }
+
+    fn proxy(q: Queue) vk.QueueProxy(apis) {
+        return vk.QueueProxy(apis).init(q.handle, device.wrapper);
+    }
+};
+
+fn initDevice(candidate: PhysicalDeviceCandidate) !void {
+    var queue_create_infos = std.AutoArrayHashMap(
+        u32,
+        vk.DeviceQueueCreateInfo,
+    ).init(frame_alloc);
+    const priority: f32 = 1.0;
+    try queue_create_infos.put(candidate.graphics_queue_family, .{
+        .queue_family_index = candidate.graphics_queue_family,
+        .queue_count = 1,
+        .p_queue_priorities = @ptrCast(&priority),
+    });
+
+    const dynamic_rendering_features = vk.PhysicalDeviceDynamicRenderingFeaturesKHR{
+        .dynamic_rendering = vk.TRUE,
+    };
+    const create_info = vk.DeviceCreateInfo{
+        .queue_create_info_count = @intCast(queue_create_infos.count()),
+        .p_queue_create_infos = queue_create_infos.values().ptr,
+        .p_enabled_features = &device_features,
+        .enabled_extension_count = @intCast(device_extensions.len),
+        .pp_enabled_extension_names = @ptrCast(&device_extensions),
+        .p_next = &dynamic_rendering_features,
+    };
+
+    const device_handle = try instance.createDevice(candidate.device, &create_info, null);
+    const vkd = try alloc.create(DeviceDispatch);
+    errdefer alloc.destroy(vkd);
+    vkd.* = try DeviceDispatch.load(device_handle, instance.wrapper.dispatch.vkGetDeviceProcAddr);
+    device = Device.init(device_handle, vkd);
+
+    physical_device = candidate.device;
+    physical_device_properties = candidate.properties;
+    physical_device_memory_properties = candidate.memory_properties;
+    physical_device_features = candidate.features;
+    graphics_queue = Queue.init(candidate.graphics_queue_family);
+    present_queue = Queue.init(candidate.present_queue_family);
+}
+
+fn deinitDevice() void {
+    device.destroyDevice(null);
+    alloc.destroy(device.wrapper);
 }
