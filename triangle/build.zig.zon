@@ -1,0 +1,21 @@
+.{
+    .name = "triangle",
+    .version = "0.0.0",
+    .dependencies = .{
+        .zglfw = .{ .path = "libs/zglfw" },
+        .system_sdk = .{ .path = "libs/system-sdk" },
+        .vulkan_zig = .{
+            .url = "https://github.com/Snektron/vulkan-zig/archive/master.tar.gz",
+            .hash = "12201514bb791408bbc111d77239fe809a89ca05f3949d763bcb63d7e23bac8ab382",
+        },
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/v1.3.283.tar.gz",
+            .hash = "1220a7e73d72a0d56bc2a65f9d8999a7c019e42260a0744c408d1cded111bc205e10",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
