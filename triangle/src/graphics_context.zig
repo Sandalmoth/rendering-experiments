@@ -26,6 +26,9 @@ const apis: []const vk.ApiInfo = &.{
             .destroySurfaceKHR = true,
             .createDevice = true,
             .getDeviceProcAddr = true,
+            .getPhysicalDeviceSurfaceCapabilitiesKHR = true,
+            .getPhysicalDeviceSurfaceFormatsKHR = true,
+            .getPhysicalDeviceSurfacePresentModesKHR = true,
         },
         .device_commands = .{
             .destroyDevice = true,
@@ -112,11 +115,14 @@ pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8, window: *glfw.Wi
     const physical_device_candidate = try pickPhysicalDevice();
     try initDevice(physical_device_candidate);
     errdefer deinitDevice();
+    try createSwapchain();
+    errdefer destroySwapchain();
 
     _ = frame_arena.reset(.retain_capacity);
 }
 
 pub fn deinit() void {
+    destroySwapchain();
     deinitDevice();
     destroySurface();
     deinitInstance();
@@ -237,29 +243,28 @@ const PhysicalDeviceCandidate = struct {
     /// pick the discrete_gpu with the most memory
     fn cmp(ctx: void, a: PhysicalDeviceCandidate, b: PhysicalDeviceCandidate) bool {
         _ = ctx;
-        const device_cmp = cmpDeviceType(a, b);
-        if (device_cmp != 0) return device_cmp > 0;
-        const memory_cmp = cmpMemory(a, b);
-        if (memory_cmp != 0) return memory_cmp > 0;
+        if (cmpDeviceType(a, b)) |result| return result;
+        if (cmpMemory(a, b)) |result| return result;
 
         return true;
     }
 
-    fn cmpDeviceType(a: PhysicalDeviceCandidate, b: PhysicalDeviceCandidate) i32 {
+    fn cmpDeviceType(a: PhysicalDeviceCandidate, b: PhysicalDeviceCandidate) ?bool {
         const dta: i32 = switch (a.properties.device_type) {
-            .discrete_gpu => 0,
+            .discrete_gpu => 2,
             .integrated_gpu, .virtual_gpu => 1,
-            else => 999,
+            else => 0,
         };
         const dtb: i32 = switch (b.properties.device_type) {
-            .discrete_gpu => 0,
+            .discrete_gpu => 2,
             .integrated_gpu, .virtual_gpu => 1,
-            else => 999,
+            else => 0,
         };
-        return dtb - dta;
+        if (dtb == dta) return null;
+        return dta > dtb;
     }
 
-    fn cmpMemory(a: PhysicalDeviceCandidate, b: PhysicalDeviceCandidate) i64 {
+    fn cmpMemory(a: PhysicalDeviceCandidate, b: PhysicalDeviceCandidate) ?bool {
         var ha: i64 = 0;
         for (a.memory_properties.memory_heaps[0..a.memory_properties.memory_heap_count]) |heap| {
             if (!heap.flags.device_local_bit) continue;
@@ -270,7 +275,8 @@ const PhysicalDeviceCandidate = struct {
             if (!heap.flags.device_local_bit) continue;
             hb += @intCast(heap.size);
         }
-        return ha - hb;
+        if (ha == hb) return null;
+        return hb > ha;
     }
 };
 
@@ -339,6 +345,10 @@ fn pickPhysicalDevice() !PhysicalDeviceCandidate {
         return error.NoCompatiblePhysicalDevice;
     }
     std.sort.insertion(PhysicalDeviceCandidate, candidates.items, {}, PhysicalDeviceCandidate.cmp);
+    log.info(
+        "Selected physical device: {s}",
+        .{std.mem.sliceTo(&candidates.items[0].properties.device_name, 0)},
+    );
     return candidates.items[0];
 }
 
@@ -426,3 +436,26 @@ fn deinitDevice() void {
     device.destroyDevice(null);
     alloc.destroy(device.wrapper);
 }
+
+fn createSwapchain() !void {
+    const capabilities = try instance.getPhysicalDeviceSurfaceCapabilitiesKHR(
+        physical_device,
+        surface,
+    );
+    const formats = try instance.getPhysicalDeviceSurfaceFormatsAllocKHR(
+        physical_device,
+        surface,
+        frame_alloc,
+    );
+    const present_modes = try instance.getPhysicalDeviceSurfacePresentModesAllocKHR(
+        physical_device,
+        surface,
+        frame_alloc,
+    );
+
+    _ = capabilities;
+    _ = formats;
+    _ = present_modes;
+}
+
+fn destroySwapchain() void {}
