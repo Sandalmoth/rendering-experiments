@@ -15,6 +15,10 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("zglfw", zglfw.module("root"));
     exe.linkLibrary(zglfw.artifact("glfw"));
 
+    exe.addIncludePath(b.path("libs/vma"));
+    exe.addCSourceFile(.{ .file = b.path("libs/vma/impl.cpp"), .flags = &.{} });
+    exe.linkLibCpp();
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

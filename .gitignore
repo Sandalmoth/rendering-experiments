@@ -1,3 +1,4 @@
 triangle/src/vk.zig
 triangle/libs/zglfw
 triangle/libs/system-sdk
+triangle/libs/vma/vk_mem_alloc.h

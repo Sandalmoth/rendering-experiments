@@ -117,6 +117,8 @@ var swapchain_extent: vk.Extent2D = undefined;
 var swapchain_images: []vk.Image = &.{};
 var swapchain_views: []vk.ImageView = &.{};
 var swapchain_supports_transfer_dst: bool = false;
+var swapchain_acquire: vk.Semaphore = undefined;
+var swapchain_release: vk.Semaphore = undefined;
 // end global state section
 
 pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8, window: *glfw.Window) !void {
