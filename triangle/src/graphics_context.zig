@@ -210,7 +210,6 @@ pub fn getNextSwapchainImage() !SwapchainImage {
         sync_image_acquired[current_frame % frames_in_flight],
         .null_handle,
     );
-    // FIXME why does this never trigger?
     if (result.result == .error_out_of_date_khr or result.result == .suboptimal_khr) {
         log.debug("{s}: Swapchain out of date, rebuilding", .{@src().fn_name});
         try recreateSwapchain();

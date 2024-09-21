@@ -7,6 +7,21 @@ const gctx = @import("graphics_context.zig");
 
 const app_name = "triangle";
 
+fn framebufferResizeCallback(
+    window: *glfw.Window,
+    width: i32,
+    height: i32,
+) callconv(.C) void {
+    _ = window;
+    _ = width;
+    _ = height;
+    // IMPROVEMENT: how can we handle errors here?
+    // an option could be to instead set a flag, and recreate in the render loop
+    gctx.recreateSwapchain() catch {
+        std.debug.print("resize failed\n", .{});
+    };
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -23,6 +38,8 @@ pub fn main() !void {
 
     try gctx.init(alloc, app_name, window);
     defer gctx.deinit();
+
+    _ = window.setFramebufferSizeCallback(framebufferResizeCallback);
 
     std.debug.assert(gctx.frames_in_flight == 2);
     // TODO support >2 frames in flight?
@@ -182,6 +199,7 @@ pub fn main() !void {
             .p_wait_semaphores = @ptrCast(&sync.release),
             .p_image_indices = @ptrCast(&swapchain_image.image_index),
         };
+        // what happens to the semaphores if resize fails here?
         _ = try gctx.present_queue.proxy().presentKHR(&present_info);
         gctx.current_frame += 1;
     }
