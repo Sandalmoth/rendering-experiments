@@ -5,6 +5,24 @@ const vk = @import("vk.zig");
 
 const log = std.log.scoped(.graphics_context);
 
+extern fn glfwGetInstanceProcAddress(
+    instance: vk.Instance,
+    procname: [*:0]const u8,
+) vk.PfnVoidFunction;
+
+extern fn glfwGetPhysicalDevicePresentationSupport(
+    instance: vk.Instance,
+    pdev: vk.PhysicalDevice,
+    queuefamily: u32,
+) c_int;
+
+extern fn glfwCreateWindowSurface(
+    instance: vk.Instance,
+    window: *glfw.Window,
+    allocation_callbacks: ?*const vk.AllocationCallbacks,
+    surface: *vk.SurfaceKHR,
+) vk.Result;
+
 // config section
 const apis: []const vk.ApiInfo = &.{
     .{
@@ -38,11 +56,31 @@ const apis: []const vk.ApiInfo = &.{
             .createSwapchainKHR = true,
             .destroySwapchainKHR = true,
             .getSwapchainImagesKHR = true,
+            .createFence = true,
+            .destroyFence = true,
+            .createSemaphore = true,
+            .destroySemaphore = true,
+            .waitForFences = true,
+            .resetFences = true,
+            .acquireNextImageKHR = true,
+            .deviceWaitIdle = true,
+            .createCommandPool = true,
+            .destroyCommandPool = true,
+            .allocateCommandBuffers = true,
+            .beginCommandBuffer = true,
+            .resetCommandPool = true,
+            .endCommandBuffer = true,
+            .cmdClearColorImage = true,
+            .cmdPipelineBarrier2 = true,
+            .queuePresentKHR = true,
+            .queueSubmit2 = true,
         },
     },
 };
 
 const api_version = vk.API_VERSION_1_3;
+
+pub const frames_in_flight = 2;
 
 const instance_extensions = [_][*:0]const u8{
     "VK_KHR_surface",
@@ -59,12 +97,23 @@ const device_extensions = [_][*:0]const u8{
 };
 
 const device_features = vk.PhysicalDeviceFeatures{};
+const device_features_1_1 = vk.PhysicalDeviceVulkan11Features{
+    .p_next = @constCast(@ptrCast(&device_features_1_2)),
+};
+const device_features_1_2 = vk.PhysicalDeviceVulkan12Features{
+    .p_next = @constCast(@ptrCast(&device_features_1_3)),
+    .descriptor_indexing = vk.TRUE,
+};
+const device_features_1_3 = vk.PhysicalDeviceVulkan13Features{
+    .dynamic_rendering = vk.TRUE,
+    .synchronization_2 = vk.TRUE,
+};
 
 const swapchain_surface_formats = [_]vk.SurfaceFormatKHR{
     // ranking of preferred formats for the swapchain surfaces
     // if none are present, the first format from getPhysicalDeviceSurfaceFormats is used
-    .{ .format = vk.Format.b8g8r8a8_srgb, .color_space = vk.ColorSpaceKHR.srgb_nonlinear_khr },
     .{ .format = vk.Format.r8g8b8a8_srgb, .color_space = vk.ColorSpaceKHR.srgb_nonlinear_khr },
+    .{ .format = vk.Format.b8g8r8a8_srgb, .color_space = vk.ColorSpaceKHR.srgb_nonlinear_khr },
 };
 // end config section
 
@@ -75,24 +124,6 @@ const DeviceDispatch = vk.DeviceWrapper(apis);
 const Instance = vk.InstanceProxy(apis);
 const Device = vk.DeviceProxy(apis);
 
-extern fn glfwGetInstanceProcAddress(
-    instance: vk.Instance,
-    procname: [*:0]const u8,
-) vk.PfnVoidFunction;
-
-extern fn glfwGetPhysicalDevicePresentationSupport(
-    instance: vk.Instance,
-    pdev: vk.PhysicalDevice,
-    queuefamily: u32,
-) c_int;
-
-extern fn glfwCreateWindowSurface(
-    instance: vk.Instance,
-    window: *glfw.Window,
-    allocation_callbacks: ?*const vk.AllocationCallbacks,
-    surface: *vk.SurfaceKHR,
-) vk.Result;
-
 // global state section
 var alloc: std.mem.Allocator = undefined;
 var frame_arena: std.heap.ArenaAllocator = undefined;
@@ -100,54 +131,100 @@ var frame_alloc: std.mem.Allocator = undefined;
 
 var vkb: BaseDispatch = undefined;
 var instance: Instance = undefined;
-var device: Device = undefined;
+pub var device: Device = undefined;
 
-var surface: vk.SurfaceKHR = undefined;
-var physical_device: vk.PhysicalDevice = undefined;
+var window: *glfw.Window = undefined;
+var surface: vk.SurfaceKHR = .null_handle;
+var physical_device: vk.PhysicalDevice = .null_handle;
 var physical_device_properties: vk.PhysicalDeviceProperties = undefined;
 var physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties = undefined;
 var physical_device_features: vk.PhysicalDeviceFeatures = undefined;
 
-var graphics_queue: Queue = undefined;
-var present_queue: Queue = undefined;
+pub var graphics_queue: Queue = undefined;
+pub var present_queue: Queue = undefined;
 
-var swapchain: vk.SwapchainKHR = undefined;
-var swapchain_format: vk.Format = undefined;
+pub var swapchain: vk.SwapchainKHR = .null_handle;
+var swapchain_format: vk.SurfaceFormatKHR = undefined;
 var swapchain_extent: vk.Extent2D = undefined;
-var swapchain_images: []vk.Image = &.{};
-var swapchain_views: []vk.ImageView = &.{};
-var swapchain_supports_transfer_dst: bool = false;
-var swapchain_acquire: vk.Semaphore = undefined;
-var swapchain_release: vk.Semaphore = undefined;
+var swapchain_images: []vk.Image = undefined;
+var swapchain_views: []vk.ImageView = undefined;
+var swapchain_supports_transfer_dst: bool = undefined;
+
+// should this sync state actually live in a renderer and not in the graphics context
+// since less general resources (command buffers, etc) will also need frames in flight?
+pub var current_frame: u64 = 0; // IMPROVEMENT: safer to get a const view of this with a function?
+var sync_image_acquired: [frames_in_flight]vk.Semaphore =
+    [_]vk.Semaphore{.null_handle} ** frames_in_flight;
+var sync_image_released: [frames_in_flight]vk.Semaphore =
+    [_]vk.Semaphore{.null_handle} ** frames_in_flight;
+var sync_image_fence: [frames_in_flight]vk.Fence =
+    [_]vk.Fence{.null_handle} ** frames_in_flight;
 // end global state section
 
-pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8, window: *glfw.Window) !void {
+pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8, _window: *glfw.Window) !void {
     alloc = _alloc;
     frame_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     errdefer frame_arena.deinit();
     frame_alloc = frame_arena.allocator();
     vkb = try BaseDispatch.load(glfwGetInstanceProcAddress);
+    window = _window;
 
     try initInstance(app_name);
     errdefer deinitInstance();
-    try createSurface(window);
+    try createSurface();
     errdefer destroySurface();
     const physical_device_candidate = try pickPhysicalDevice();
     try initDevice(physical_device_candidate);
     errdefer deinitDevice();
-    try createSwapchain(window);
-    errdefer destroySwapchain();
+    try createSynchronization();
+    errdefer destroySynchronization();
+    try createSwapchain();
+    errdefer destroySwapchain(true);
 
     _ = frame_arena.reset(.retain_capacity);
 }
 
 pub fn deinit() void {
-    destroySwapchain();
+    destroySwapchain(true);
+    destroySynchronization();
     deinitDevice();
     destroySurface();
     deinitInstance();
     frame_arena.deinit();
 }
+
+const Sync = struct { acquire: vk.Semaphore, release: vk.Semaphore, fence: vk.Fence };
+pub fn getSync() Sync {
+    return .{
+        .acquire = sync_image_acquired[current_frame % frames_in_flight],
+        .release = sync_image_released[current_frame % frames_in_flight],
+        .fence = sync_image_fence[current_frame % frames_in_flight],
+    };
+}
+
+const SwapchainImage = struct { image: vk.Image, view: vk.ImageView, image_index: u32 };
+pub fn getNextSwapchainImage() !SwapchainImage {
+    const result = try device.acquireNextImageKHR(
+        swapchain,
+        1000_000_000,
+        sync_image_acquired[current_frame % frames_in_flight],
+        .null_handle,
+    );
+    // FIXME why does this never trigger?
+    if (result.result == .error_out_of_date_khr or result.result == .suboptimal_khr) {
+        log.debug("{s}: Swapchain out of date, rebuilding", .{@src().fn_name});
+        try recreateSwapchain();
+    }
+    // IMPORVEMENT: what else can acquireNextImageKHR return? what should happen on timeout?
+    const image_index = result.image_index;
+    return .{
+        .image = swapchain_images[image_index],
+        .view = swapchain_views[image_index],
+        .image_index = image_index,
+    };
+}
+
+// pub fn present() !void {}
 
 fn initInstance(app_name: [*:0]const u8) !void {
     const all_layers = if (enable_validation) layers ++ validation_layers else layers;
@@ -242,13 +319,14 @@ fn checkLayerSupport(required_layers: []const [*:0]const u8) !bool {
     return true;
 }
 
-fn createSurface(window: *glfw.Window) !void {
+fn createSurface() !void {
     const success = glfwCreateWindowSurface(instance.handle, window, null, &surface);
     if (success != .success) return error.SurfaceInitFailed;
 }
 
 fn destroySurface() void {
     instance.destroySurfaceKHR(surface, null);
+    surface = .null_handle;
 }
 
 const PhysicalDeviceCandidate = struct {
@@ -409,7 +487,7 @@ const Queue = struct {
         };
     }
 
-    fn proxy(q: Queue) vk.QueueProxy(apis) {
+    pub fn proxy(q: Queue) vk.QueueProxy(apis) {
         return vk.QueueProxy(apis).init(q.handle, device.wrapper);
     }
 };
@@ -426,16 +504,13 @@ fn initDevice(candidate: PhysicalDeviceCandidate) !void {
         .p_queue_priorities = @ptrCast(&priority),
     });
 
-    const dynamic_rendering_features = vk.PhysicalDeviceDynamicRenderingFeaturesKHR{
-        .dynamic_rendering = vk.TRUE,
-    };
     const create_info = vk.DeviceCreateInfo{
         .queue_create_info_count = @intCast(queue_create_infos.count()),
         .p_queue_create_infos = queue_create_infos.values().ptr,
         .p_enabled_features = &device_features,
         .enabled_extension_count = @intCast(device_extensions.len),
         .pp_enabled_extension_names = @ptrCast(&device_extensions),
-        .p_next = &dynamic_rendering_features,
+        .p_next = &device_features_1_1,
     };
 
     const device_handle = try instance.createDevice(candidate.device, &create_info, null);
@@ -455,9 +530,37 @@ fn initDevice(candidate: PhysicalDeviceCandidate) !void {
 fn deinitDevice() void {
     device.destroyDevice(null);
     alloc.destroy(device.wrapper);
+    physical_device = .null_handle;
 }
 
-fn createSwapchain(window: *glfw.Window) !void {
+fn createSynchronization() !void {
+    for (0..frames_in_flight) |i| {
+        sync_image_acquired[i] = try device.createSemaphore(&.{}, null);
+        sync_image_released[i] = try device.createSemaphore(&.{}, null);
+        sync_image_fence[i] = try device.createFence(&.{
+            .flags = .{ .signaled_bit = true },
+        }, null);
+    }
+}
+
+fn destroySynchronization() void {
+    for (0..frames_in_flight) |i| {
+        if (sync_image_acquired[i] != .null_handle) {
+            device.destroySemaphore(sync_image_acquired[i], null);
+            sync_image_acquired[i] = .null_handle;
+        }
+        if (sync_image_released[i] != .null_handle) {
+            device.destroySemaphore(sync_image_released[i], null);
+            sync_image_released[i] = .null_handle;
+        }
+        if (sync_image_fence[i] != .null_handle) {
+            device.destroyFence(sync_image_fence[i], null);
+            sync_image_fence[i] = .null_handle;
+        }
+    }
+}
+
+fn createSwapchain() !void {
     const capabilities = try instance.getPhysicalDeviceSurfaceCapabilitiesKHR(
         physical_device,
         surface,
@@ -477,29 +580,10 @@ fn createSwapchain(window: *glfw.Window) !void {
     log.debug("Selected swapchain format: {} {}", .{ format.format, format.color_space });
     const present_mode = pickSwapchainPresentMode(present_modes);
     log.debug("Selected swapchain present_mode: {}", .{present_mode});
-
-    var extent = blk: {
-        const framebuffer_size = window.getFramebufferSize();
-        break :blk vk.Extent2D{
-            .width = @intCast(framebuffer_size[0]),
-            .height = @intCast(framebuffer_size[1]),
-        };
-    };
-    extent.width = std.math.clamp(
-        extent.width,
-        capabilities.min_image_extent.width,
-        capabilities.max_image_extent.width,
-    );
-    extent.height = std.math.clamp(
-        extent.height,
-        capabilities.min_image_extent.height,
-        capabilities.max_image_extent.height,
-    );
-    std.log.debug("Swapchain extent: {}", .{extent});
-
-    var count = capabilities.min_image_count + 1;
-    if (capabilities.max_image_count > 0) count = @min(count, capabilities.max_image_count);
-    std.log.debug("Swapchain image count: {}", .{count});
+    const extent = getSwapchainExtent(capabilities);
+    log.debug("Swapchain extent: {}", .{extent});
+    const count = getSwapchainImageCount(capabilities);
+    log.debug("Swapchain image count: {}", .{count});
 
     var create_info = vk.SwapchainCreateInfoKHR{
         .surface = surface,
@@ -517,7 +601,7 @@ fn createSwapchain(window: *glfw.Window) !void {
         .composite_alpha = .{ .opaque_bit_khr = true },
         .present_mode = present_mode,
         .clipped = vk.TRUE,
-        .old_swapchain = .null_handle,
+        .old_swapchain = swapchain, // might recreate
     };
     var queue_families = std.AutoArrayHashMap(u32, void).init(frame_alloc);
     try queue_families.put(graphics_queue.family, {});
@@ -529,7 +613,7 @@ fn createSwapchain(window: *glfw.Window) !void {
     }
     swapchain = try device.createSwapchainKHR(&create_info, null);
     errdefer device.destroySwapchainKHR(swapchain, null);
-    swapchain_format = format.format;
+    swapchain_format = format;
     swapchain_extent = extent;
     swapchain_images = try device.getSwapchainImagesAllocKHR(swapchain, alloc);
     swapchain_supports_transfer_dst = capabilities.supported_usage_flags.transfer_dst_bit;
@@ -541,7 +625,7 @@ fn createSwapchain(window: *glfw.Window) !void {
         const view_create_info = vk.ImageViewCreateInfo{
             .image = image,
             .view_type = .@"2d",
-            .format = swapchain_format,
+            .format = swapchain_format.format,
             .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
             .subresource_range = .{
                 .aspect_mask = .{ .color_bit = true },
@@ -551,8 +635,8 @@ fn createSwapchain(window: *glfw.Window) !void {
                 .layer_count = 1,
             },
         };
-        // if we fail, cleanup the views we have created so far
         swapchain_views[i] = device.createImageView(&view_create_info, null) catch |e| {
+            // if we fail, cleanup the views we have created so far
             var j = i;
             while (j > 0) : (j -= 1) device.destroyImageView(swapchain_views[j - 1], null);
             return e;
@@ -560,11 +644,23 @@ fn createSwapchain(window: *glfw.Window) !void {
     }
 }
 
-fn destroySwapchain() void {
+pub fn recreateSwapchain() !void {
+    try device.deviceWaitIdle(); // is this really needed?
+
+    const old_swapchain = swapchain;
+    destroySwapchain(false);
+    try createSwapchain();
+    device.destroySwapchainKHR(old_swapchain, null);
+}
+
+fn destroySwapchain(destroy_swapchain: bool) void {
     for (swapchain_views) |view| device.destroyImageView(view, null);
     alloc.free(swapchain_views);
     alloc.free(swapchain_images);
-    device.destroySwapchainKHR(swapchain, null);
+    if (destroy_swapchain) {
+        device.destroySwapchainKHR(swapchain, null);
+        swapchain = .null_handle;
+    }
 }
 
 fn pickSwapchainFormat(formats: []vk.SurfaceFormatKHR) vk.SurfaceFormatKHR {
@@ -592,4 +688,29 @@ fn pickSwapchainFormat(formats: []vk.SurfaceFormatKHR) vk.SurfaceFormatKHR {
 fn pickSwapchainPresentMode(modes: []vk.PresentModeKHR) vk.PresentModeKHR {
     for (modes) |mode| if (mode == .mailbox_khr) return mode;
     return vk.PresentModeKHR.fifo_khr; // guaranteed support, should be fine not to check
+}
+
+fn getSwapchainExtent(capabilities: vk.SurfaceCapabilitiesKHR) vk.Extent2D {
+    const framebuffer_size = window.getFramebufferSize();
+    var extent = vk.Extent2D{
+        .width = @intCast(framebuffer_size[0]),
+        .height = @intCast(framebuffer_size[1]),
+    };
+    extent.width = std.math.clamp(
+        extent.width,
+        capabilities.min_image_extent.width,
+        capabilities.max_image_extent.width,
+    );
+    extent.height = std.math.clamp(
+        extent.height,
+        capabilities.min_image_extent.height,
+        capabilities.max_image_extent.height,
+    );
+    return extent;
+}
+
+fn getSwapchainImageCount(capabilities: vk.SurfaceCapabilitiesKHR) u32 {
+    var count = capabilities.min_image_count + 1;
+    if (capabilities.max_image_count > 0) count = @min(count, capabilities.max_image_count);
+    return count;
 }
