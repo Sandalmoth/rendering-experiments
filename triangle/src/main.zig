@@ -55,6 +55,9 @@ pub fn main() !void {
     }, null);
     defer gctx.device.destroyCommandPool(command_pools[1], null);
 
+    var pipeline = try Pipeline.create();
+    defer pipeline.destroy();
+
     const rendertarget_extent = vk.Extent3D{ .width = 1920, .height = 1080, .depth = 1 };
     const rendertarget_image_create_info = vk.ImageCreateInfo{
         .image_type = .@"2d",
@@ -152,7 +155,7 @@ pub fn main() !void {
         };
         gctx.device.cmdPipelineBarrier2(command_buffer, &swapchain_write_dependency_info);
 
-        const rendertarget_write_barrier = vk.ImageMemoryBarrier2{
+        const rendertarget_draw_barrier = vk.ImageMemoryBarrier2{
             .src_stage_mask = .{ .all_commands_bit = true },
             .src_access_mask = .{ .memory_write_bit = true },
             .dst_stage_mask = .{ .all_commands_bit = true },
@@ -161,7 +164,7 @@ pub fn main() !void {
                 .memory_read_bit = true,
             },
             .old_layout = .undefined,
-            .new_layout = .general,
+            .new_layout = .color_attachment_optimal,
             .subresource_range = .{
                 .aspect_mask = .{ .color_bit = true },
                 .base_mip_level = 0,
@@ -173,11 +176,13 @@ pub fn main() !void {
             .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
             .image = rendertarget.image,
         };
-        const rendertarget_write_dependency_info = vk.DependencyInfo{
+        const rendertarget_draw_dependency_info = vk.DependencyInfo{
             .image_memory_barrier_count = 1,
-            .p_image_memory_barriers = @ptrCast(&rendertarget_write_barrier),
+            .p_image_memory_barriers = @ptrCast(&rendertarget_draw_barrier),
         };
-        gctx.device.cmdPipelineBarrier2(command_buffer, &rendertarget_write_dependency_info);
+        gctx.device.cmdPipelineBarrier2(command_buffer, &rendertarget_draw_dependency_info);
+
+        // DRAW STUFF
 
         var grey: f32 = @floatCast(0.5 + 0.5 * @sin(
             3.14e-3 * @as(f64, @floatFromInt(std.time.milliTimestamp())),
@@ -189,21 +194,54 @@ pub fn main() !void {
             grey,
             1.0,
         } };
-        const clear_range = vk.ImageSubresourceRange{
-            .aspect_mask = .{ .color_bit = true },
-            .base_mip_level = 0,
-            .level_count = 1,
-            .base_array_layer = 0,
-            .layer_count = 1,
+        const color_attachement_info = vk.RenderingAttachmentInfoKHR{
+            .image_view = rendertarget.view,
+            .resolve_mode = .{},
+            .image_layout = .color_attachment_optimal,
+            .resolve_image_view = .null_handle,
+            .resolve_image_layout = .undefined,
+            .load_op = .clear,
+            .store_op = .store,
+            .clear_value = .{ .color = clear_color },
         };
-        gctx.device.cmdClearColorImage(
-            command_buffer,
-            rendertarget.image,
-            .general,
-            &clear_color,
-            1,
-            @ptrCast(&clear_range),
-        );
+        const render_info = vk.RenderingInfoKHR{
+            .color_attachment_count = 1,
+            .p_color_attachments = @ptrCast(&color_attachement_info),
+            .layer_count = 1,
+            .view_mask = 0,
+            .render_area = .{
+                .extent = .{
+                    .width = rendertarget_extent.width,
+                    .height = rendertarget_extent.height,
+                },
+                .offset = .{ .x = 0, .y = 0 },
+            },
+        };
+        gctx.device.cmdBeginRendering(command_buffer, &render_info);
+
+        gctx.device.cmdBindPipeline(command_buffer, .graphics, pipeline.pipeline);
+        const viewport: vk.Viewport = .{
+            .x = 0,
+            .y = 0,
+            .width = @as(f32, @floatFromInt(rendertarget_extent.width)),
+            .height = @as(f32, @floatFromInt(rendertarget_extent.height)),
+            .min_depth = 0,
+            .max_depth = 1,
+        };
+        gctx.device.cmdSetViewport(command_buffer, 0, 1, @ptrCast(&viewport));
+        const scissor: vk.Rect2D = .{
+            .extent = .{
+                .width = rendertarget_extent.width,
+                .height = rendertarget_extent.height,
+            },
+            .offset = .{ .x = 0, .y = 0 },
+        };
+        gctx.device.cmdSetScissor(command_buffer, 0, 1, @ptrCast(&scissor));
+
+        gctx.device.cmdDraw(command_buffer, 3, 1, 0, 0);
+
+        gctx.device.cmdEndRendering(command_buffer);
+        // END DRAW STUFF
 
         const rendertarget_read_barrier = vk.ImageMemoryBarrier2{
             .src_stage_mask = .{ .all_commands_bit = true },
@@ -213,7 +251,7 @@ pub fn main() !void {
                 .memory_write_bit = true,
                 .memory_read_bit = true,
             },
-            .old_layout = .general,
+            .old_layout = .color_attachment_optimal,
             .new_layout = .transfer_src_optimal,
             .subresource_range = .{
                 .aspect_mask = .{ .color_bit = true },
@@ -346,4 +384,171 @@ pub fn main() !void {
     // so manually clear these to destroy the command bufferst before destroying the pools
     try gctx.device.resetCommandPool(command_pools[0], .{});
     try gctx.device.resetCommandPool(command_pools[1], .{});
+}
+
+const Pipeline = struct {
+    pipeline: vk.Pipeline,
+    layout: vk.PipelineLayout,
+
+    fn create() !Pipeline {
+        const vert = try loadShader("res/shaders/shader.vert");
+        defer gctx.device.destroyShaderModule(vert, null);
+        const frag = try loadShader("res/shaders/shader.frag");
+        defer gctx.device.destroyShaderModule(frag, null);
+
+        const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
+            .{
+                .stage = .{ .vertex_bit = true },
+                .module = vert,
+                .p_name = "main",
+            },
+            .{
+                .stage = .{ .fragment_bit = true },
+                .module = frag,
+                .p_name = "main",
+            },
+        };
+
+        const dynamic_states = [_]vk.DynamicState{
+            .viewport,
+            .scissor,
+        };
+        const dynamic_state = vk.PipelineDynamicStateCreateInfo{
+            .dynamic_state_count = @intCast(dynamic_states.len),
+            .p_dynamic_states = &dynamic_states,
+        };
+
+        const vertex_input = vk.PipelineVertexInputStateCreateInfo{
+            .vertex_binding_description_count = 0,
+            .vertex_attribute_description_count = 0,
+        };
+
+        const pipeline_assembly_info = vk.PipelineInputAssemblyStateCreateInfo{
+            .topology = .triangle_list,
+            .primitive_restart_enable = vk.FALSE,
+        };
+
+        const viewport_state = vk.PipelineViewportStateCreateInfo{
+            .viewport_count = 1,
+            .scissor_count = 1,
+        };
+
+        const rasterizer = vk.PipelineRasterizationStateCreateInfo{
+            .depth_clamp_enable = vk.FALSE,
+            .rasterizer_discard_enable = vk.FALSE,
+            .polygon_mode = .fill,
+            .line_width = 1.0,
+            .cull_mode = .{ .back_bit = true },
+            .front_face = .clockwise,
+            .depth_bias_enable = vk.FALSE,
+            .depth_bias_constant_factor = 0.0,
+            .depth_bias_clamp = 0.0,
+            .depth_bias_slope_factor = 0.0,
+        };
+
+        const multisampling = vk.PipelineMultisampleStateCreateInfo{
+            .sample_shading_enable = vk.FALSE,
+            .rasterization_samples = .{ .@"1_bit" = true },
+            .min_sample_shading = 1.0,
+            .p_sample_mask = null,
+            .alpha_to_coverage_enable = vk.FALSE,
+            .alpha_to_one_enable = vk.FALSE,
+        };
+
+        const blending = [_]vk.PipelineColorBlendAttachmentState{
+            .{
+                .color_write_mask = .{ .r_bit = true, .g_bit = true, .b_bit = true, .a_bit = true },
+                .blend_enable = vk.FALSE,
+                .src_color_blend_factor = .one,
+                .dst_color_blend_factor = .zero,
+                .color_blend_op = .add,
+                .src_alpha_blend_factor = .one,
+                .dst_alpha_blend_factor = .zero,
+                .alpha_blend_op = .add,
+            },
+        };
+
+        const blend_info = vk.PipelineColorBlendStateCreateInfo{
+            .logic_op_enable = vk.FALSE,
+            .logic_op = .copy,
+            .attachment_count = 1,
+            .p_attachments = &blending,
+            .blend_constants = .{ 0.0, 0.0, 0.0, 0.0 },
+        };
+
+        const layout_info = vk.PipelineLayoutCreateInfo{};
+        const pipeline_layout = try gctx.device.createPipelineLayout(&layout_info, null);
+
+        const color_attachment_formats = [_]vk.Format{.r16g16b16a16_sfloat};
+        const dynamic_info = vk.PipelineRenderingCreateInfo{
+            .color_attachment_count = 1,
+            .p_color_attachment_formats = &color_attachment_formats,
+            .depth_attachment_format = .undefined,
+            .stencil_attachment_format = .undefined,
+            .view_mask = 0, // what even is this?
+        };
+
+        const depth_stencil_state = vk.PipelineDepthStencilStateCreateInfo{
+            .depth_test_enable = vk.FALSE,
+            .depth_write_enable = vk.FALSE,
+            .depth_compare_op = .never,
+            .depth_bounds_test_enable = vk.FALSE,
+            .stencil_test_enable = vk.FALSE,
+            .front = std.mem.zeroes(vk.StencilOpState),
+            .back = std.mem.zeroes(vk.StencilOpState),
+            .min_depth_bounds = 0.0,
+            .max_depth_bounds = 0.0,
+        };
+
+        const create_info = vk.GraphicsPipelineCreateInfo{
+            .stage_count = @intCast(shader_stages.len),
+            .p_stages = @ptrCast(&shader_stages[0]),
+            .p_vertex_input_state = &vertex_input,
+            .p_input_assembly_state = &pipeline_assembly_info,
+            .p_viewport_state = &viewport_state,
+            .p_rasterization_state = &rasterizer,
+            .p_multisample_state = &multisampling,
+            .p_depth_stencil_state = &depth_stencil_state,
+            .p_color_blend_state = &blend_info,
+            .p_dynamic_state = &dynamic_state,
+            .layout = pipeline_layout,
+            .render_pass = .null_handle, // NOTE dynamic rendering
+            .subpass = 0,
+            .base_pipeline_handle = .null_handle,
+            .base_pipeline_index = -1,
+            .p_next = &dynamic_info,
+        };
+
+        var pipeline: vk.Pipeline = undefined;
+        _ = try gctx.device.createGraphicsPipelines(
+            .null_handle,
+            1,
+            @ptrCast(&create_info),
+            null,
+            @ptrCast(&pipeline),
+        );
+
+        return .{
+            .layout = pipeline_layout,
+            .pipeline = pipeline,
+        };
+    }
+
+    fn destroy(pipeline: *Pipeline) void {
+        gctx.device.destroyPipeline(pipeline.pipeline, null);
+        gctx.device.destroyPipelineLayout(pipeline.layout, null);
+        pipeline.* = undefined;
+    }
+};
+
+fn loadShader(path: []const u8) !vk.ShaderModule {
+    const bytecode = try std.fs.cwd().readFileAlloc(gctx.alloc, path, 16 * 1024 * 1024);
+    defer gctx.alloc.free(bytecode);
+    std.debug.assert((@intFromPtr(bytecode.ptr) & 3) == 0); // needs to be aligned to u32
+
+    const create_info = vk.ShaderModuleCreateInfo{
+        .code_size = bytecode.len,
+        .p_code = @alignCast(@ptrCast(bytecode.ptr)),
+    };
+    return try gctx.device.createShaderModule(&create_info, null);
 }

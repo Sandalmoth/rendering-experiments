@@ -76,6 +76,18 @@ const apis: []const vk.ApiInfo = &.{
             .queuePresentKHR = true,
             .queueSubmit2 = true,
             .cmdBlitImage2 = true,
+            .createShaderModule = true,
+            .destroyShaderModule = true,
+            .createGraphicsPipelines = true,
+            .createPipelineLayout = true,
+            .destroyPipeline = true,
+            .destroyPipelineLayout = true,
+            .cmdBeginRendering = true,
+            .cmdBindPipeline = true,
+            .cmdSetViewport = true,
+            .cmdSetScissor = true,
+            .cmdDraw = true,
+            .cmdEndRendering = true,
         },
     },
 };
@@ -128,7 +140,7 @@ const Instance = vk.InstanceProxy(apis);
 const Device = vk.DeviceProxy(apis);
 
 // global state section
-var alloc: std.mem.Allocator = undefined;
+pub var alloc: std.mem.Allocator = undefined;
 var frame_arena: std.heap.ArenaAllocator = undefined;
 var frame_alloc: std.mem.Allocator = undefined;
 pub var vk_alloc: vma.Allocator = undefined;

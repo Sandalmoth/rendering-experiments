@@ -19,6 +19,9 @@ pub fn build(b: *std.Build) void {
     exe.addCSourceFile(.{ .file = b.path("libs/vma/impl.cpp"), .flags = &.{} });
     exe.linkLibCpp();
 
+    const build_shader_cmd = b.addSystemCommand(&.{ "sh", "build_shaders.sh" });
+    b.getInstallStep().dependOn(&build_shader_cmd.step);
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
