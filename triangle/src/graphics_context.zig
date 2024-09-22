@@ -130,7 +130,7 @@ const Device = vk.DeviceProxy(apis);
 var alloc: std.mem.Allocator = undefined;
 var frame_arena: std.heap.ArenaAllocator = undefined;
 var frame_alloc: std.mem.Allocator = undefined;
-var vk_alloc: vma.Allocator = undefined;
+pub var vk_alloc: vma.Allocator = undefined;
 
 var vkb: BaseDispatch = undefined;
 var instance: Instance = undefined;
@@ -190,6 +190,7 @@ pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8, _window: *glfw.W
 }
 
 pub fn deinit() void {
+    destroyAllocator();
     destroySwapchain(true);
     destroySynchronization();
     deinitDevice();

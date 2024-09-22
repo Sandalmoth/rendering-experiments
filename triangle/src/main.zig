@@ -55,6 +55,47 @@ pub fn main() !void {
     }, null);
     defer gctx.device.destroyCommandPool(command_pools[1], null);
 
+    const rendertarget_extent = vk.Extent3D{ .width = 1920, .height = 1080, .depth = 1 };
+    const rendertarget_image_create_info = vk.ImageCreateInfo{
+        .image_type = .@"2d",
+        .format = .r16g16b16a16_sfloat,
+        .extent = rendertarget_extent,
+        .usage = .{
+            .transfer_src_bit = true,
+            .transfer_dst_bit = true,
+            .storage_bit = true, // i think we don't want this as it disables compression?
+            .color_attachment_bit = true,
+        },
+        .mip_levels = 1,
+        .array_layers = 1,
+        .samples = .{ .@"1_bit" = true },
+        .tiling = .optimal,
+        .sharing_mode = .exclusive,
+        .queue_family_index_count = 1,
+        .p_queue_family_indices = @ptrCast(&gctx.graphics_queue.family),
+        .initial_layout = .undefined,
+    };
+    var rendertarget = try gctx.vk_alloc.createImage(
+        rendertarget_extent,
+        &rendertarget_image_create_info,
+    );
+    defer gctx.vk_alloc.destroyImage(rendertarget);
+    const rendertarget_view_create_info = vk.ImageViewCreateInfo{
+        .image = rendertarget.image,
+        .format = .r16g16b16a16_sfloat,
+        .view_type = .@"2d",
+        .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+        .subresource_range = .{
+            .aspect_mask = .{ .color_bit = true },
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+    };
+    rendertarget.view = try gctx.device.createImageView(&rendertarget_view_create_info, null);
+    defer gctx.device.destroyImageView(rendertarget.view, null);
+
     while (!window.shouldClose()) {
         glfw.pollEvents();
         if (window.getKey(.escape) == .press) window.setShouldClose(true);

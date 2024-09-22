@@ -38,6 +38,47 @@ pub const Allocator = struct {
     }
 
     pub fn deinit(alloc: *Allocator) void {
-        c.vmaDestroyAllocator(alloc);
+        c.vmaDestroyAllocator(alloc.backing_allocator);
+        alloc.* = undefined;
     }
+
+    pub fn createImage(
+        alloc: *Allocator,
+        extent: vk.Extent3D,
+        image_create_info: *const vk.ImageCreateInfo,
+    ) !AllocatedImage {
+        const create_info = c.VmaAllocationCreateInfo{
+            .usage = c.VMA_MEMORY_USAGE_GPU_ONLY,
+            .requiredFlags = c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        };
+        var result: AllocatedImage = undefined;
+        result.extent = extent;
+        const success = c.vmaCreateImage(
+            alloc.backing_allocator,
+            @ptrCast(image_create_info),
+            &create_info,
+            @ptrCast(&result.image),
+            &result.allocation,
+            null,
+        );
+        if (success != c.VK_SUCCESS) return error.AllocationFailed;
+        return result;
+    }
+
+    pub fn destroyImage(alloc: *Allocator, allocated_image: AllocatedImage) void {
+        const image: *const c.VkImage = @ptrCast(&allocated_image.image);
+        c.vmaDestroyImage(
+            alloc.backing_allocator,
+            image.*,
+            allocated_image.allocation,
+        );
+    }
+};
+
+const AllocatedImage = struct {
+    image: vk.Image,
+    view: vk.ImageView,
+    allocation: c.VmaAllocation,
+    extent: vk.Extent3D,
+    format: vk.Format,
 };
