@@ -75,6 +75,7 @@ const apis: []const vk.ApiInfo = &.{
             .cmdPipelineBarrier2 = true,
             .queuePresentKHR = true,
             .queueSubmit2 = true,
+            .cmdBlitImage2 = true,
         },
     },
 };
@@ -148,7 +149,7 @@ pub var present_queue: Queue = undefined;
 
 pub var swapchain: vk.SwapchainKHR = .null_handle;
 var swapchain_format: vk.SurfaceFormatKHR = undefined;
-var swapchain_extent: vk.Extent2D = undefined;
+pub var swapchain_extent: vk.Extent2D = undefined;
 var swapchain_images: []vk.Image = undefined;
 var swapchain_views: []vk.ImageView = undefined;
 var swapchain_supports_transfer_dst: bool = undefined;

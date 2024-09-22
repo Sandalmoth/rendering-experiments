@@ -63,7 +63,7 @@ pub fn main() !void {
         .usage = .{
             .transfer_src_bit = true,
             .transfer_dst_bit = true,
-            .storage_bit = true, // i think we don't want this as it disables compression?
+            // .storage_bit = true, // i think we don't want this as it disables compression?
             .color_attachment_bit = true,
         },
         .mip_levels = 1,
@@ -134,7 +134,7 @@ pub fn main() !void {
                 .memory_read_bit = true,
             },
             .old_layout = .undefined,
-            .new_layout = .general,
+            .new_layout = .transfer_dst_optimal,
             .subresource_range = .{
                 .aspect_mask = .{ .color_bit = true },
                 .base_mip_level = 0,
@@ -151,6 +151,33 @@ pub fn main() !void {
             .p_image_memory_barriers = @ptrCast(&swapchain_write_barrier),
         };
         gctx.device.cmdPipelineBarrier2(command_buffer, &swapchain_write_dependency_info);
+
+        const rendertarget_write_barrier = vk.ImageMemoryBarrier2{
+            .src_stage_mask = .{ .all_commands_bit = true },
+            .src_access_mask = .{ .memory_write_bit = true },
+            .dst_stage_mask = .{ .all_commands_bit = true },
+            .dst_access_mask = .{
+                .memory_write_bit = true,
+                .memory_read_bit = true,
+            },
+            .old_layout = .undefined,
+            .new_layout = .general,
+            .subresource_range = .{
+                .aspect_mask = .{ .color_bit = true },
+                .base_mip_level = 0,
+                .level_count = 1,
+                .base_array_layer = 0,
+                .layer_count = 1,
+            },
+            .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+            .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+            .image = rendertarget.image,
+        };
+        const rendertarget_write_dependency_info = vk.DependencyInfo{
+            .image_memory_barrier_count = 1,
+            .p_image_memory_barriers = @ptrCast(&rendertarget_write_barrier),
+        };
+        gctx.device.cmdPipelineBarrier2(command_buffer, &rendertarget_write_dependency_info);
 
         var grey: f32 = @floatCast(0.5 + 0.5 * @sin(
             3.14e-3 * @as(f64, @floatFromInt(std.time.milliTimestamp())),
@@ -171,12 +198,80 @@ pub fn main() !void {
         };
         gctx.device.cmdClearColorImage(
             command_buffer,
-            swapchain_image.image,
+            rendertarget.image,
             .general,
             &clear_color,
             1,
             @ptrCast(&clear_range),
         );
+
+        const rendertarget_read_barrier = vk.ImageMemoryBarrier2{
+            .src_stage_mask = .{ .all_commands_bit = true },
+            .src_access_mask = .{ .memory_write_bit = true },
+            .dst_stage_mask = .{ .all_commands_bit = true },
+            .dst_access_mask = .{
+                .memory_write_bit = true,
+                .memory_read_bit = true,
+            },
+            .old_layout = .general,
+            .new_layout = .transfer_src_optimal,
+            .subresource_range = .{
+                .aspect_mask = .{ .color_bit = true },
+                .base_mip_level = 0,
+                .level_count = 1,
+                .base_array_layer = 0,
+                .layer_count = 1,
+            },
+            .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+            .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+            .image = rendertarget.image,
+        };
+        const rendertarget_read_dependency_info = vk.DependencyInfo{
+            .image_memory_barrier_count = 1,
+            .p_image_memory_barriers = @ptrCast(&rendertarget_read_barrier),
+        };
+        gctx.device.cmdPipelineBarrier2(command_buffer, &rendertarget_read_dependency_info);
+
+        const blit_region = vk.ImageBlit2{
+            .src_offsets = .{
+                .{ .x = 0, .y = 0, .z = 0 },
+                .{
+                    .x = @intCast(rendertarget_extent.width),
+                    .y = @intCast(rendertarget_extent.height),
+                    .z = 1,
+                },
+            },
+            .dst_offsets = .{
+                .{ .x = 0, .y = 0, .z = 0 },
+                .{
+                    .x = @intCast(gctx.swapchain_extent.width),
+                    .y = @intCast(gctx.swapchain_extent.height),
+                    .z = 1,
+                },
+            },
+            .src_subresource = .{
+                .aspect_mask = .{ .color_bit = true },
+                .mip_level = 0,
+                .base_array_layer = 0,
+                .layer_count = 1,
+            },
+            .dst_subresource = .{
+                .aspect_mask = .{ .color_bit = true },
+                .mip_level = 0,
+                .base_array_layer = 0,
+                .layer_count = 1,
+            },
+        };
+        const blit_info = vk.BlitImageInfo2{
+            .src_image = rendertarget.image,
+            .dst_image = swapchain_image.image,
+            .src_image_layout = .transfer_src_optimal,
+            .dst_image_layout = .transfer_dst_optimal,
+            .region_count = 1,
+            .p_regions = @ptrCast(&blit_region),
+            .filter = .linear,
+        };
+        gctx.device.cmdBlitImage2(command_buffer, &blit_info);
 
         const swapchain_present_barrier = vk.ImageMemoryBarrier2{
             .src_stage_mask = .{ .all_commands_bit = true },
@@ -186,7 +281,7 @@ pub fn main() !void {
                 .memory_write_bit = true,
                 .memory_read_bit = true,
             },
-            .old_layout = .general,
+            .old_layout = .transfer_dst_optimal,
             .new_layout = .present_src_khr,
             .subresource_range = .{
                 .aspect_mask = .{ .color_bit = true },
