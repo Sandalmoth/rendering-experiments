@@ -2,6 +2,7 @@ const std = @import("std");
 
 const glfw = @import("zglfw");
 const vk = @import("vk.zig");
+const vma = @import("vma.zig");
 
 const log = std.log.scoped(.graphics_context);
 
@@ -103,6 +104,7 @@ const device_features_1_1 = vk.PhysicalDeviceVulkan11Features{
 const device_features_1_2 = vk.PhysicalDeviceVulkan12Features{
     .p_next = @constCast(@ptrCast(&device_features_1_3)),
     .descriptor_indexing = vk.TRUE,
+    .buffer_device_address = vk.TRUE,
 };
 const device_features_1_3 = vk.PhysicalDeviceVulkan13Features{
     .dynamic_rendering = vk.TRUE,
@@ -128,6 +130,7 @@ const Device = vk.DeviceProxy(apis);
 var alloc: std.mem.Allocator = undefined;
 var frame_arena: std.heap.ArenaAllocator = undefined;
 var frame_alloc: std.mem.Allocator = undefined;
+var vk_alloc: vma.Allocator = undefined;
 
 var vkb: BaseDispatch = undefined;
 var instance: Instance = undefined;
@@ -180,6 +183,8 @@ pub fn init(_alloc: std.mem.Allocator, app_name: [*:0]const u8, _window: *glfw.W
     errdefer destroySynchronization();
     try createSwapchain();
     errdefer destroySwapchain(true);
+    try createAllocator();
+    errdefer destroyAllocator();
 
     _ = frame_arena.reset(.retain_capacity);
 }
@@ -712,4 +717,18 @@ fn getSwapchainImageCount(capabilities: vk.SurfaceCapabilitiesKHR) u32 {
     var count = capabilities.min_image_count + 1;
     if (capabilities.max_image_count > 0) count = @min(count, capabilities.max_image_count);
     return count;
+}
+
+fn createAllocator() !void {
+    vk_alloc = try vma.Allocator.init(
+        instance.handle,
+        physical_device,
+        device.handle,
+        @ptrCast(&glfwGetInstanceProcAddress),
+        @ptrCast(instance.wrapper.dispatch.vkGetDeviceProcAddr),
+    );
+}
+
+fn destroyAllocator() void {
+    vk_alloc.deinit();
 }
