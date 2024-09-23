@@ -1,0 +1,13 @@
+.{
+    .name = "streaming-models",
+    .version = "0.0.0",
+    .dependencies = .{
+        .zglfw = .{ .path = "libs/zglfw" },
+        .system_sdk = .{ .path = "libs/system-sdk" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

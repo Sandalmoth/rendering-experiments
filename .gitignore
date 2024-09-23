@@ -2,3 +2,7 @@ triangle/src/vk.zig
 triangle/libs/zglfw
 triangle/libs/system-sdk
 triangle/libs/vma/vk_mem_alloc.h
+
+streaming-models/libs/vulkan-zig
+streaming-models/libs/zglfw
+streaming-models/libs/system-sdk
