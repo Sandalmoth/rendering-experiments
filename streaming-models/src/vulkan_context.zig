@@ -24,19 +24,20 @@ const apis: []const vk.ApiInfo = &.{
             .getPhysicalDeviceMemoryProperties = true,
             .getPhysicalDeviceProperties = true,
             .getPhysicalDeviceQueueFamilyProperties = true,
+            .getPhysicalDeviceSurfaceCapabilitiesKHR = true,
+            .getPhysicalDeviceSurfaceFormatsKHR = true,
+            .getPhysicalDeviceSurfacePresentModesKHR = true,
             .getPhysicalDeviceSurfaceSupportKHR = true,
-            // .getPhysicalDeviceSurfaceCapabilitiesKHR = true,
-            // .getPhysicalDeviceSurfaceFormatsKHR = true,
-            // .getPhysicalDeviceSurfacePresentModesKHR = true,
         },
         .device_commands = .{
+            .createImageView = true,
+            .createSwapchainKHR = true,
             .destroyDevice = true,
+            .destroyImageView = true,
+            .destroySwapchainKHR = true,
+            .deviceWaitIdle = true,
             .getDeviceQueue = true,
-            // .createImageView = true,
-            // .destroyImageView = true,
-            // .createSwapchainKHR = true,
-            // .destroySwapchainKHR = true,
-            // .getSwapchainImagesKHR = true,
+            .getSwapchainImagesKHR = true,
             // .createFence = true,
             // .destroyFence = true,
             // .createSemaphore = true,
@@ -44,7 +45,6 @@ const apis: []const vk.ApiInfo = &.{
             // .waitForFences = true,
             // .resetFences = true,
             // .acquireNextImageKHR = true,
-            // .deviceWaitIdle = true,
             // .createCommandPool = true,
             // .destroyCommandPool = true,
             // .allocateCommandBuffers = true,
@@ -73,8 +73,6 @@ const apis: []const vk.ApiInfo = &.{
 };
 
 const api_version = vk.API_VERSION_1_3;
-
-pub const frames_in_flight = 2;
 
 const enable_debug = @import("builtin").mode == .Debug;
 
@@ -124,7 +122,7 @@ const Instance = vk.InstanceProxy(apis);
 const Device = vk.DeviceProxy(apis);
 
 // ### global state section ###
-pub var alloc: std.mem.Allocator = undefined;
+var alloc: std.mem.Allocator = undefined;
 
 var vkb: BaseDispatch = undefined;
 var instance: Instance = undefined;
@@ -143,12 +141,13 @@ pub var async_compute_queue: Queue = undefined;
 pub var transfer_queue: Queue = undefined;
 pub var present_queue: Queue = undefined;
 
+pub var rebuild_swapchain = false;
 var swapchain: vk.SwapchainKHR = .null_handle;
 var swapchain_format: vk.SurfaceFormatKHR = undefined;
 var swapchain_extent: vk.Extent2D = undefined;
 var swapchain_images: []vk.Image = undefined;
 var swapchain_views: []vk.ImageView = undefined;
-var swapchain_supports_transfer_dst: bool = undefined;
+pub var swapchain_supports_transfer_dst: bool = undefined;
 // ### end global state section ###
 
 pub fn init(_alloc: std.mem.Allocator, app_name: [:0]const u8) !void {
@@ -166,21 +165,34 @@ pub fn init(_alloc: std.mem.Allocator, app_name: [:0]const u8) !void {
     const physical_device_candidate = try pickPhysicalDevice(arena_alloc);
     try initDevice(arena_alloc, physical_device_candidate);
     errdefer deinitDevice();
-    // try createSynchronization();
-    // errdefer destroySynchronization();
-    // try createSwapchain();
-    // errdefer destroySwapchain(true);
-    // try createAllocator();
-    // errdefer destroyAllocator();
+    try createSwapchain();
+    errdefer destroySwapchain(true);
 }
 
 pub fn deinit() void {
-    // destroyAllocator();
-    // destroySwapchain(true);
-    // destroySynchronization();
+    device.deviceWaitIdle() catch |e| {
+        log.warn("Failed deviceWaitIdle in vulkan_context deinit: {}", .{e});
+    };
+    destroySwapchain(true);
     deinitDevice();
     destroySurface();
     deinitInstance();
+}
+
+const SwapchainImage = struct { image_index: u32, image: vk.Image, view: vk.ImageView };
+pub fn getNextSwapchainImage(acquire: vk.Semaphore) !SwapchainImage {
+    const result = try device.acquireNextImageKHR(swapchain, 1000_000_000, acquire, .null_handle);
+    if (result.result == .error_out_of_date_khr or result.result == .suboptimal_khr) {
+        rebuild_swapchain = true;
+        return error.SwapchainRebuildRequired;
+    }
+    // IMPORVEMENT: what else can acquireNextImageKHR return? what should happen on timeout?
+    const image_index = result.image_index;
+    return .{
+        .image_index = image_index,
+        .image = swapchain_images[image_index],
+        .view = swapchain_views[image_index],
+    };
 }
 
 fn initInstance(arena_alloc: std.mem.Allocator, app_name: [*:0]const u8) !void {
@@ -611,4 +623,177 @@ fn deinitDevice() void {
     device.destroyDevice(null);
     alloc.destroy(device.wrapper);
     physical_device = .null_handle;
+}
+
+fn createSwapchain() !void {
+    // NOTE kinda ugly to create this arena
+    // however, swapchain recreation is slow anyway, so the heap alloc call should be no problem
+    // and since createSwapchain could be called at many times, not just init, it's awkward to
+    // rely on passing in some allocator, as that would required getimage and present to take an
+    // arena allocator as an argument
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer _ = arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const capabilities = try instance.getPhysicalDeviceSurfaceCapabilitiesKHR(
+        physical_device,
+        surface,
+    );
+    const formats = try instance.getPhysicalDeviceSurfaceFormatsAllocKHR(
+        physical_device,
+        surface,
+        arena_alloc,
+    );
+    const present_modes = try instance.getPhysicalDeviceSurfacePresentModesAllocKHR(
+        physical_device,
+        surface,
+        arena_alloc,
+    );
+
+    log.debug("Creating swapchain", .{});
+    const format = pickSwapchainFormat(formats);
+    log.debug("  swapchain format:       {} {}", .{ format.format, format.color_space });
+    const present_mode = pickSwapchainPresentMode(present_modes);
+    log.debug("  swapchain present_mode: {}", .{present_mode});
+    const extent = getSwapchainExtent(capabilities);
+    log.debug("  swapchain extent:       {}", .{extent});
+    const count = getSwapchainImageCount(capabilities);
+    log.debug("  swapchain image count:  {}", .{count});
+
+    var create_info = vk.SwapchainCreateInfoKHR{
+        .surface = surface,
+        .min_image_count = count,
+        .image_format = format.format,
+        .image_color_space = format.color_space,
+        .image_extent = extent,
+        .image_array_layers = 1,
+        .image_usage = .{
+            .color_attachment_bit = true,
+            .transfer_dst_bit = capabilities.supported_usage_flags.transfer_dst_bit,
+        },
+        .image_sharing_mode = .exclusive, // see below, might get set to concurrent
+        .pre_transform = capabilities.current_transform,
+        .composite_alpha = .{ .opaque_bit_khr = true },
+        .present_mode = present_mode,
+        .clipped = vk.TRUE,
+        .old_swapchain = swapchain, // might recreate
+    };
+    var queue_families = std.AutoArrayHashMap(u32, void).init(arena_alloc);
+    try queue_families.put(graphics_compute_queue.family, {});
+    try queue_families.put(present_queue.family, {});
+    if (queue_families.count() > 1) {
+        create_info.image_sharing_mode = .concurrent;
+        create_info.queue_family_index_count = @intCast(queue_families.count());
+        create_info.p_queue_family_indices = queue_families.keys().ptr;
+    }
+    swapchain = try device.createSwapchainKHR(&create_info, null);
+    errdefer device.destroySwapchainKHR(swapchain, null);
+    swapchain_format = format;
+    swapchain_extent = extent;
+    swapchain_images = try device.getSwapchainImagesAllocKHR(swapchain, alloc);
+    swapchain_supports_transfer_dst = capabilities.supported_usage_flags.transfer_dst_bit;
+    errdefer alloc.free(swapchain_images);
+
+    swapchain_views = try alloc.alloc(vk.ImageView, swapchain_images.len);
+    errdefer alloc.free(swapchain_views);
+    for (swapchain_images, 0..) |image, i| {
+        const view_create_info = vk.ImageViewCreateInfo{
+            .image = image,
+            .view_type = .@"2d",
+            .format = swapchain_format.format,
+            .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+            .subresource_range = .{
+                .aspect_mask = .{ .color_bit = true },
+                .base_mip_level = 0,
+                .level_count = 1,
+                .base_array_layer = 0,
+                .layer_count = 1,
+            },
+        };
+        swapchain_views[i] = device.createImageView(&view_create_info, null) catch |e| {
+            // if we fail, cleanup the views we have created so far
+            var j = i;
+            while (j > 0) : (j -= 1) device.destroyImageView(swapchain_views[j - 1], null);
+            return e;
+        };
+    }
+
+    rebuild_swapchain = false;
+}
+
+/// rebuild swapchain if needed
+pub fn updateSwapchain() !void {
+    if (!rebuild_swapchain) return;
+    if (swapchain == .null_handle) {
+        log.debug("Tried to update swapchain, but swapchain is null_handle", .{});
+        return;
+    }
+
+    // apparrently, this is not enough, since present is not a queue operation
+    // the right way might be to have a fence for each swapchain image and wait on all of them?
+    // though, this seems to be what everyone does, so maybe it's mostly fine?
+    try device.deviceWaitIdle();
+
+    const old_swapchain = swapchain;
+    destroySwapchain(false);
+    try createSwapchain();
+    device.destroySwapchainKHR(old_swapchain, null);
+}
+
+fn destroySwapchain(destroy_swapchain: bool) void {
+    for (swapchain_views) |view| device.destroyImageView(view, null);
+    alloc.free(swapchain_views);
+    alloc.free(swapchain_images);
+    if (destroy_swapchain) {
+        device.destroySwapchainKHR(swapchain, null);
+        swapchain = .null_handle;
+    }
+}
+
+fn pickSwapchainFormat(formats: []vk.SurfaceFormatKHR) vk.SurfaceFormatKHR {
+    std.debug.assert(formats.len > 0);
+    var mask: [swapchain_surface_formats.len]bool = undefined;
+
+    outer: for (swapchain_surface_formats, 0..) |req, i| {
+        mask[i] = false;
+        for (formats) |ava| {
+            if (!std.meta.eql(req, ava)) continue;
+            mask[i] = true;
+            continue :outer;
+        }
+    }
+
+    for (swapchain_surface_formats, mask) |format, available| {
+        if (!available) continue;
+        return format;
+    }
+
+    log.warn("None of the requested swapchain surface formats were found", .{});
+    return formats[0];
+}
+
+fn pickSwapchainPresentMode(modes: []vk.PresentModeKHR) vk.PresentModeKHR {
+    for (modes) |mode| if (mode == .mailbox_khr) return mode;
+    return vk.PresentModeKHR.fifo_khr; // guaranteed support, should be fine not to check
+}
+
+fn getSwapchainExtent(capabilities: vk.SurfaceCapabilitiesKHR) vk.Extent2D {
+    var extent = pf.getFramebufferSize();
+    extent.width = std.math.clamp(
+        extent.width,
+        capabilities.min_image_extent.width,
+        capabilities.max_image_extent.width,
+    );
+    extent.height = std.math.clamp(
+        extent.height,
+        capabilities.min_image_extent.height,
+        capabilities.max_image_extent.height,
+    );
+    return extent;
+}
+
+fn getSwapchainImageCount(capabilities: vk.SurfaceCapabilitiesKHR) u32 {
+    var count = capabilities.min_image_count + 1;
+    if (capabilities.max_image_count > 0) count = @min(count, capabilities.max_image_count);
+    return count;
 }

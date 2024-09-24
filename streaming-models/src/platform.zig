@@ -2,18 +2,14 @@ const std = @import("std");
 const glfw = @import("zglfw");
 const vk = @import("vk");
 
+const vx = @import("vulkan_context.zig");
+
 const log = std.log.scoped(.platform);
 
 extern fn glfwGetInstanceProcAddress(
     instance: vk.Instance,
     procname: [*:0]const u8,
 ) vk.PfnVoidFunction;
-
-extern fn glfwGetPhysicalDevicePresentationSupport(
-    instance: vk.Instance,
-    pdev: vk.PhysicalDevice,
-    queuefamily: u32,
-) c_int;
 
 extern fn glfwCreateWindowSurface(
     instance: vk.Instance,
@@ -33,6 +29,7 @@ pub fn init(app_name: [:0]const u8, width: i32, height: i32) !void {
 
     glfw.windowHintTyped(.client_api, .no_api);
     window = try glfw.Window.create(width, height, app_name, null);
+    _ = window.setFramebufferSizeCallback(framebufferResizeCallback);
 }
 
 pub fn deinit() void {
@@ -48,6 +45,11 @@ pub fn pollEvents() void {
     glfw.pollEvents();
 }
 
+// ### functions that interact with vulkan_context ###
+fn framebufferResizeCallback(_: *glfw.Window, _: i32, _: i32) callconv(.C) void {
+    vx.rebuild_swapchain = true;
+}
+
 pub fn getRequiredInstanceExtensions() ![][*:0]const u8 {
     return try glfw.getRequiredInstanceExtensions();
 }
@@ -58,3 +60,12 @@ pub fn createWindowSurface(instance: vk.Instance) !vk.SurfaceKHR {
     if (success != .success) return error.SurfaceCreateFailed;
     return surface;
 }
+
+pub fn getFramebufferSize() vk.Extent2D {
+    const framebuffer_size = window.getFramebufferSize();
+    return .{
+        .width = @intCast(framebuffer_size[0]),
+        .height = @intCast(framebuffer_size[1]),
+    };
+}
+// ### end functions that interact with vulkan_context ###
