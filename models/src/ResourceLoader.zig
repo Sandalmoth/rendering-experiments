@@ -274,17 +274,33 @@ pub fn load(rl: *ResourceLoader, filenames: []const []const u8) !BundleHandle {
     // cursor now holds total memory required for everything, respecting alignment
     const alloc_info = vk.MemoryAllocateInfo{
         .allocation_size = cursor,
-        .memory_type_index = 0, // FIXME
+        .memory_type_index = try vx.findMemoryType(
+            vertex_buffer_memreq.memory_type_bits | index_buffer_memreq.memory_type_bits,
+            .{ .host_visible_bit = true, .host_coherent_bit = true },
+        ),
     };
+    std.debug.print("{}\n", .{alloc_info});
     const memory = try vx.device.allocateMemory(&alloc_info, null);
     errdefer vx.device.freeMemory(memory, null);
 
     cursor = 0;
     cursor = std.mem.alignForward(usize, cursor, vertex_buffer_memreq.alignment);
     try vx.device.bindBufferMemory(vertex_buffer, memory, cursor);
+    const _vd = try vx.device.mapMemory(
+        memory,
+        cursor,
+        @sizeOf(Vertex) * all_vertices.items.len,
+        .{},
+    );
+    @memcpy(@as([*]Vertex, @alignCast(@ptrCast(_vd))), all_vertices.items);
+    vx.device.unmapMemory(memory);
     cursor += vertex_buffer_memreq.size;
+
     cursor = std.mem.alignForward(usize, cursor, index_buffer_memreq.alignment);
     try vx.device.bindBufferMemory(index_buffer, memory, cursor);
+    const _id = try vx.device.mapMemory(memory, cursor, @sizeOf(u32) * indices.items.len, .{});
+    @memcpy(@as([*]u32, @alignCast(@ptrCast(_id))), indices.items);
+    vx.device.unmapMemory(memory);
     cursor += index_buffer_memreq.size;
 
     var bundle = try Bundle.initPtr(rl.alloc, memory, vertex_buffer, index_buffer);

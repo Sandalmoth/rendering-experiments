@@ -44,6 +44,8 @@ const apis: []const vk.ApiInfo = &.{
             .getBufferMemoryRequirements = true,
             .getDeviceQueue = true,
             .getSwapchainImagesKHR = true,
+            .mapMemory = true,
+            .unmapMemory = true,
             // .createFence = true,
             // .destroyFence = true,
             // .createSemaphore = true,
@@ -199,6 +201,23 @@ pub fn getNextSwapchainImage(acquire: vk.Semaphore) !SwapchainImage {
         .image = swapchain_images[image_index],
         .view = swapchain_views[image_index],
     };
+}
+
+pub fn findMemoryType(memory_type_bits: u32, property_flags: vk.MemoryPropertyFlags) !u32 {
+    for (physical_device_memory_properties.memory_types[0..physical_device_memory_properties
+        .memory_type_count], 0..) |memory_type, i|
+    {
+        // i don't really get this first check?
+        // the index of the memory type holds some special meaning?
+        // or is the memory type bits from the test memory requirements correlated to the device
+        // such that it basically already knows what memory types it would work with?
+        if (memory_type_bits & (@as(u32, 1) << @intCast(i)) == 0) continue;
+        if (property_flags.toInt() & memory_type.property_flags.toInt() !=
+            property_flags.toInt()) continue;
+        std.debug.print("{}\n", .{memory_type});
+        return @intCast(i);
+    }
+    return error.MemoryTypeNotFound;
 }
 
 fn initInstance(arena_alloc: std.mem.Allocator, app_name: [*:0]const u8) !void {
