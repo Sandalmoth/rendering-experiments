@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "streaming-models",
+        .name = "models",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -17,6 +17,9 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addAnonymousImport("vk", .{ .root_source_file = b.path(
         "libs/vulkan-zig/vk.zig",
+    ) });
+    exe.root_module.addAnonymousImport("qoi", .{ .root_source_file = b.path(
+        "libs/zig-qoi/qoi.zig",
     ) });
 
     // const build_shader_cmd = b.addSystemCommand(&.{ "sh", "build_shaders.sh" });
