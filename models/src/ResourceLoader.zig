@@ -1,6 +1,7 @@
 const std = @import("std");
-const vx = @import("vulkan_context.zig");
 const qoi = @import("qoi");
+const vk = @import("vk");
+const vx = @import("vulkan_context.zig");
 
 const Vertex = @import("renderer.zig").Vertex;
 
@@ -21,18 +22,52 @@ pub fn deinit(rl: *ResourceLoader) void {
 const BundleHandle = struct {
     bundle: *Bundle,
 
-    fn isReady(handle: BundleHandle) bool {
+    pub fn isReady(handle: BundleHandle) bool {
         _ = handle;
     }
 
-    fn wait(handle: BundleHandle) Bundle {
-        _ = handle;
+    pub fn wait(handle: BundleHandle) *Bundle {
+        // TODO wait for upload
+        return handle.bundle;
     }
 };
 const Bundle = struct {
+    const Models =
+        std.StringHashMap(struct {
+        vertex_offset: u32,
+        vertex_count: u32,
+        index_offset: u32,
+        index_count: u32,
+    });
+
+    alloc: std.mem.Allocator,
+    memory: vk.DeviceMemory,
+    vertex_buffer: vk.Buffer,
+    index_buffer: vk.Buffer,
+    models: Models,
+
+    fn initPtr(
+        alloc: std.mem.Allocator,
+        memory: vk.DeviceMemory,
+        vertex_buffer: vk.Buffer,
+        index_buffer: vk.Buffer,
+    ) !*Bundle {
+        var bundle = try alloc.create(Bundle);
+        bundle.alloc = alloc;
+        bundle.memory = memory;
+        bundle.vertex_buffer = vertex_buffer;
+        bundle.index_buffer = index_buffer;
+        bundle.models = Models.init(alloc);
+        return bundle;
+    }
+
     // maybe there should be a function to just bind all the resources or something?
-    fn destroy(bundle: *Bundle) void {
-        bundle.* = undefined;
+    pub fn deinit(bundle: *Bundle) void {
+        vx.device.destroyBuffer(bundle.vertex_buffer, null);
+        vx.device.destroyBuffer(bundle.index_buffer, null);
+        vx.device.freeMemory(bundle.memory, null);
+        bundle.models.deinit();
+        bundle.alloc.destroy(bundle);
     }
 };
 
@@ -58,7 +93,12 @@ pub fn load(rl: *ResourceLoader, filenames: []const []const u8) !BundleHandle {
 
     var textures = std.StringHashMap(qoi.Image).init(rl.alloc);
     defer textures.deinit();
-    var models = std.StringHashMap(struct { offset: u32, len: u32 }).init(rl.alloc);
+    var models = std.StringHashMap(struct {
+        vertex_offset: u32,
+        vertex_count: u32,
+        index_offset: u32,
+        index_count: u32,
+    }).init(rl.alloc);
     defer models.deinit();
 
     // MAJOR_IMPROVEMENT: we shouldn't really load any data here
@@ -80,6 +120,8 @@ pub fn load(rl: *ResourceLoader, filenames: []const []const u8) !BundleHandle {
             try textures.put(filename, texture);
             std.debug.print("qoi: {} {} {}\n", .{ texture.width, texture.height, texture.colorspace });
         } else if (std.mem.eql(u8, "obj", filename[filename.len - 3 ..])) {
+            const vertex_offset: u32 = @intCast(all_vertices.items.len);
+            const index_offset: u32 = @intCast(indices.items.len);
             // very crappy obj decoder
             std.debug.print("obj\n", .{});
             const bytes = try std.fs.cwd().readFileAlloc(rl.alloc, filename, 16 * 1024 * 1024);
@@ -152,13 +194,13 @@ pub fn load(rl: *ResourceLoader, filenames: []const []const u8) !BundleHandle {
                         // std.debug.print("{}\n", .{v});
                         if (vertices.get(v)) |element| {
                             try indices.append(
-                                element + @as(u32, @intCast(all_vertices.items.len)),
+                                element + vertex_offset,
                             );
                         } else {
                             const element: u32 = @intCast(vertices.count());
                             vertices.putNoClobber(v, element) catch unreachable;
                             try indices.append(
-                                element + @as(u32, @intCast(all_vertices.items.len)),
+                                element + vertex_offset,
                             );
                         }
                     }
@@ -168,14 +210,99 @@ pub fn load(rl: *ResourceLoader, filenames: []const []const u8) !BundleHandle {
             std.debug.print("n_vertices {}\n", .{vertices.count()});
 
             try all_vertices.appendSlice(vertices.keys());
+            try models.put(filename, .{
+                .vertex_offset = vertex_offset,
+                .vertex_count = @as(u32, @intCast(all_vertices.items.len)) - vertex_offset,
+                .index_offset = index_offset,
+                .index_count = @as(u32, @intCast(indices.items.len)) - index_offset,
+            });
         }
+    }
+
+    var it_models = models.iterator();
+    while (it_models.next()) |model| {
+        std.debug.print("{s}\t{}\n", .{ model.key_ptr.*, model.value_ptr.* });
     }
 
     std.debug.print("n_vertices total {}\n", .{all_vertices.items.len});
     std.debug.print("n_indices  total {}\n", .{indices.items.len});
 
+    var cursor: usize = 0; // compute the total size required
+
+    const vertex_buffer_info = vk.BufferCreateInfo{
+        .size = @sizeOf(Vertex) * all_vertices.items.len,
+        .usage = .{ .transfer_dst_bit = true, .vertex_buffer_bit = true },
+        .sharing_mode = .exclusive,
+    };
+    const vertex_buffer = try vx.device.createBuffer(&vertex_buffer_info, null);
+    errdefer vx.device.destroyBuffer(vertex_buffer, null);
+    const vertex_buffer_memreq = vx.device.getBufferMemoryRequirements(vertex_buffer);
+    std.debug.print("{}\n", .{vertex_buffer_memreq});
+    cursor = std.mem.alignForward(usize, cursor, vertex_buffer_memreq.alignment);
+    cursor += vertex_buffer_memreq.size;
+
+    const index_buffer_info = vk.BufferCreateInfo{
+        .size = @sizeOf(u32) * indices.items.len,
+        .usage = .{ .transfer_dst_bit = true, .index_buffer_bit = true },
+        .sharing_mode = .exclusive,
+    };
+    const index_buffer = try vx.device.createBuffer(&index_buffer_info, null);
+    errdefer vx.device.destroyBuffer(index_buffer, null);
+    const index_buffer_memreq = vx.device.getBufferMemoryRequirements(index_buffer);
+    std.debug.print("{}\n", .{index_buffer_memreq});
+    cursor = std.mem.alignForward(usize, cursor, index_buffer_memreq.alignment);
+    cursor += index_buffer_memreq.size;
+
+    // TODO textures
+    // const images = rl.alloc.alloc(vk.Image, textures.count());
     var it_textures = textures.valueIterator();
+    // while (it_textures.next()) |texture| {
+    //     const image_info = vk.ImageCreateInfo{
+    //         .image_type = .@"2d",
+    //         .format = .r8g8b8a8_srgb,
+    //         .extent = .{ .width = texture.width, .height = texture.height, .depth = 1 },
+    //         .mip_levels = 1,
+    //         .array_layers = 1,
+    //         .samples = .{ .@"32_bit" = true }, // what is this?
+    //         .tiling = .linear,
+    //         .usage = .{ .transfer_src_bit = true },
+    //         .sharing_mode = .exclusive,
+    //         .initial_layout = .undefined,
+    //     };
+    // }
+
+    // cursor now holds total memory required for everything, respecting alignment
+    const alloc_info = vk.MemoryAllocateInfo{
+        .allocation_size = cursor,
+        .memory_type_index = 0, // FIXME
+    };
+    const memory = try vx.device.allocateMemory(&alloc_info, null);
+    errdefer vx.device.freeMemory(memory, null);
+
+    cursor = 0;
+    cursor = std.mem.alignForward(usize, cursor, vertex_buffer_memreq.alignment);
+    try vx.device.bindBufferMemory(vertex_buffer, memory, cursor);
+    cursor += vertex_buffer_memreq.size;
+    cursor = std.mem.alignForward(usize, cursor, index_buffer_memreq.alignment);
+    try vx.device.bindBufferMemory(index_buffer, memory, cursor);
+    cursor += index_buffer_memreq.size;
+
+    var bundle = try Bundle.initPtr(rl.alloc, memory, vertex_buffer, index_buffer);
+    // errdefer gets hard here, since if we errdefer bundle deinit, we get double frees
+    it_models = models.iterator();
+    while (it_models.next()) |model| {
+        try bundle.models.put(model.key_ptr.*, .{
+            .vertex_offset = model.value_ptr.vertex_offset,
+            .vertex_count = model.value_ptr.vertex_count,
+            .index_offset = model.value_ptr.index_offset,
+            .index_count = model.value_ptr.index_count,
+        });
+    }
+
+    it_textures = textures.valueIterator();
     while (it_textures.next()) |texture| texture.deinit(rl.alloc);
 
-    return undefined;
+    return .{
+        .bundle = bundle,
+    };
 }

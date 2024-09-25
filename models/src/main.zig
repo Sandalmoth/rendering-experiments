@@ -32,8 +32,9 @@ pub fn main() !void {
         "res/brick.qoi",
         "res/wood.qoi",
     };
-    const resources = try rl.load(&filenames);
-    _ = resources;
+    const resource_handle = try rl.load(&filenames);
+    const resources = resource_handle.wait();
+    defer resources.deinit();
 
     // basically guaranteed, and possible to work around if really needed
     // (could use the swapchain as a color buffer and render a fullscreen quad)
