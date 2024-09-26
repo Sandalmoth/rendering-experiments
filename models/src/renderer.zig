@@ -283,3 +283,54 @@ fn loadShader(path: []const u8) !vk.ShaderModule {
     };
     return try vx.device.createShaderModule(&create_info, null);
 }
+
+pub fn cmdChangeImageLayout(
+    command_buffer: vk.CommandBuffer,
+    image: vk.Image,
+    old_layout: vk.ImageLayout,
+    new_layout: vk.ImageLayout,
+) void {
+    const swapchain_write_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .all_commands_bit = true },
+        .src_access_mask = .{ .memory_write_bit = true },
+        .dst_stage_mask = .{ .all_commands_bit = true },
+        .dst_access_mask = .{
+            .memory_write_bit = true,
+            .memory_read_bit = true,
+        },
+        .old_layout = old_layout,
+        .new_layout = new_layout,
+        .subresource_range = .{
+            .aspect_mask = .{ .color_bit = true },
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .image = image,
+    };
+    const swapchain_write_dependency_info = vk.DependencyInfo{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&swapchain_write_barrier),
+    };
+    vx.device.cmdPipelineBarrier2(command_buffer, &swapchain_write_dependency_info);
+}
+
+pub fn present(
+    wait: vk.Semaphore,
+    image_index: u32,
+) !void {
+    const present_info = vk.PresentInfoKHR{
+        .swapchain_count = 1,
+        .p_swapchains = @ptrCast(&vx.swapchain),
+        .wait_semaphore_count = 1,
+        .p_wait_semaphores = @ptrCast(&wait),
+        .p_image_indices = @ptrCast(&image_index),
+    };
+    // what happens to the semaphores if resize fails here?
+    _ = try vx.present_queue.proxy().presentKHR(&present_info);
+
+    current_frame += 1;
+}

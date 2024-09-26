@@ -30,6 +30,7 @@ const apis: []const vk.ApiInfo = &.{
             .getPhysicalDeviceSurfaceSupportKHR = true,
         },
         .device_commands = .{
+            .acquireNextImageKHR = true,
             .allocateMemory = true,
             .bindBufferMemory = true,
             .createBuffer = true,
@@ -57,25 +58,21 @@ const apis: []const vk.ApiInfo = &.{
             .getDeviceQueue = true,
             .getSwapchainImagesKHR = true,
             .mapMemory = true,
+            .resetCommandPool = true,
             .unmapMemory = true,
-            // .waitForFences = true,
-            // .resetFences = true,
-            // .acquireNextImageKHR = true,
-            // .allocateCommandBuffers = true,
-            // .beginCommandBuffer = true,
-            // .resetCommandPool = true,
-            // .endCommandBuffer = true,
-            // .cmdClearColorImage = true,
-            // .cmdPipelineBarrier2 = true,
-            // .queuePresentKHR = true,
-            // .queueSubmit2 = true,
-            // .cmdBlitImage2 = true,
-            // .cmdBeginRendering = true,
-            // .cmdBindPipeline = true,
-            // .cmdSetViewport = true,
-            // .cmdSetScissor = true,
-            // .cmdDraw = true,
-            // .cmdEndRendering = true,
+            .waitForFences = true,
+            //
+            .resetFences = true,
+            .allocateCommandBuffers = true,
+            .beginCommandBuffer = true,
+            .endCommandBuffer = true,
+            .cmdPipelineBarrier2 = true,
+            .queuePresentKHR = true,
+            .queueSubmit2 = true,
+            .cmdBeginRendering = true,
+            .cmdBindPipeline = true,
+            .cmdSetViewport = true,
+            .cmdEndRendering = true,
         },
     },
 };
@@ -150,7 +147,7 @@ pub var transfer_queue: Queue = undefined;
 pub var present_queue: Queue = undefined;
 
 pub var rebuild_swapchain = false;
-var swapchain: vk.SwapchainKHR = .null_handle;
+pub var swapchain: vk.SwapchainKHR = .null_handle; // i'd rather this wasn't public?
 var swapchain_format: vk.SurfaceFormatKHR = undefined;
 var swapchain_extent: vk.Extent2D = undefined;
 var swapchain_images: []vk.Image = undefined;
@@ -187,7 +184,12 @@ pub fn deinit() void {
     deinitInstance();
 }
 
-const SwapchainImage = struct { image_index: u32, image: vk.Image, view: vk.ImageView };
+const SwapchainImage = struct {
+    image_index: u32,
+    image: vk.Image,
+    view: vk.ImageView,
+    extent: vk.Extent2D,
+};
 pub fn getNextSwapchainImage(acquire: vk.Semaphore) !SwapchainImage {
     const result = try device.acquireNextImageKHR(swapchain, 1000_000_000, acquire, .null_handle);
     if (result.result == .error_out_of_date_khr or result.result == .suboptimal_khr) {
@@ -200,6 +202,7 @@ pub fn getNextSwapchainImage(acquire: vk.Semaphore) !SwapchainImage {
         .image_index = image_index,
         .image = swapchain_images[image_index],
         .view = swapchain_views[image_index],
+        .extent = swapchain_extent,
     };
 }
 

@@ -9,3 +9,4 @@ triangle/libs/vma/vk_mem_alloc.h
 
 models/libs
 models/zig-out
+models/res
