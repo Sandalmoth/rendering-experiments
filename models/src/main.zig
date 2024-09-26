@@ -1,6 +1,8 @@
 const std = @import("std");
 const pf = @import("platform.zig");
 const vx = @import("vulkan_context.zig");
+const vk = @import("vk");
+const renderer = @import("renderer.zig");
 
 const ResourceLoader = @import("ResourceLoader.zig");
 
@@ -36,6 +38,12 @@ pub fn main() !void {
     const resources = resource_handle.wait();
     defer resources.deinit();
 
+    try renderer.init();
+    defer renderer.deinit();
+
+    var pipeline = try renderer.Pipeline.create();
+    defer pipeline.destroy();
+
     // basically guaranteed, and possible to work around if really needed
     // (could use the swapchain as a color buffer and render a fullscreen quad)
     if (!vx.swapchain_supports_transfer_dst) std.log.err("Surface must support TRANSFER_DST", .{});
@@ -43,5 +51,8 @@ pub fn main() !void {
     while (!pf.shouldClose()) {
         pf.pollEvents();
         try vx.updateSwapchain();
+
+        const frame = renderer.getFrameStuff();
+        _ = frame;
     }
 }

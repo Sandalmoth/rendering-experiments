@@ -55,6 +55,7 @@ const Bundle = struct {
         var bundle = try alloc.create(Bundle);
         bundle.alloc = alloc;
         bundle.memory = memory;
+        // TODO these should be gpu only, but are currently cpu visible
         bundle.vertex_buffer = vertex_buffer;
         bundle.index_buffer = index_buffer;
         bundle.models = Models.init(alloc);
