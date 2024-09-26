@@ -81,8 +81,8 @@ pub fn main() !void {
             .undefined,
             .color_attachment_optimal,
         );
-        // DRAW STUFF
 
+        // DRAW STUFF
         var grey: f32 = @floatCast(0.5 + 0.5 * @sin(
             3.14e-3 * @as(f64, @floatFromInt(std.time.milliTimestamp())),
         ));
@@ -126,7 +126,33 @@ pub fn main() !void {
         };
         vx.device.cmdSetViewport(command_buffer, 0, 1, @ptrCast(&viewport));
 
-        // drawindexed?
+        const vertex_buffer_offsets: vk.DeviceSize = 0;
+        vx.device.cmdBindVertexBuffers(
+            command_buffer,
+            0,
+            1,
+            @ptrCast(&resources.vertex_buffer),
+            @ptrCast(&vertex_buffer_offsets),
+        );
+
+        vx.device.cmdBindIndexBuffer(
+            command_buffer,
+            resources.index_buffer,
+            0,
+            .uint32,
+        );
+
+        var it_models = resources.models.iterator();
+        while (it_models.next()) |model| {
+            vx.device.cmdDrawIndexed(
+                command_buffer,
+                model.value_ptr.index_count,
+                1,
+                0,
+                @intCast(model.value_ptr.vertex_offset),
+                0,
+            );
+        }
 
         vx.device.cmdEndRendering(command_buffer);
         // END DRAW STUFF
