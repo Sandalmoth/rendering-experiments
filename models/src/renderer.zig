@@ -164,7 +164,8 @@ pub const Pipeline = struct {
             .rasterizer_discard_enable = vk.FALSE,
             .polygon_mode = .fill,
             .line_width = 1.0,
-            .cull_mode = .{ .back_bit = true },
+            .cull_mode = .{},
+            // .cull_mode = .{ .back_bit = true },
             .front_face = .clockwise,
             .depth_bias_enable = vk.FALSE,
             .depth_bias_constant_factor = 0.0,
@@ -203,9 +204,12 @@ pub const Pipeline = struct {
         };
 
         const depth_stencil_state = vk.PipelineDepthStencilStateCreateInfo{
-            .depth_test_enable = vk.TRUE,
-            .depth_write_enable = vk.TRUE,
-            .depth_compare_op = .less,
+            .depth_test_enable = vk.FALSE,
+            .depth_write_enable = vk.FALSE,
+            .depth_compare_op = .never,
+            // .depth_test_enable = vk.TRUE,
+            // .depth_write_enable = vk.TRUE,
+            // .depth_compare_op = .less,
             .depth_bounds_test_enable = vk.FALSE,
             .stencil_test_enable = vk.FALSE,
             .front = std.mem.zeroes(vk.StencilOpState),
@@ -217,11 +221,13 @@ pub const Pipeline = struct {
         const layout_info = vk.PipelineLayoutCreateInfo{};
         const pipeline_layout = try vx.device.createPipelineLayout(&layout_info, null);
 
-        const color_attachment_formats = [_]vk.Format{.r16g16b16a16_sfloat};
+        const color_attachment_formats = [_]vk.Format{.b8g8r8a8_srgb};
+        // const color_attachment_formats = [_]vk.Format{.r16g16b16a16_sfloat};
         const dynamic_info = vk.PipelineRenderingCreateInfo{
             .color_attachment_count = 1,
             .p_color_attachment_formats = &color_attachment_formats,
-            .depth_attachment_format = .d32_sfloat,
+            .depth_attachment_format = .undefined,
+            // .depth_attachment_format = .d32_sfloat,
             .stencil_attachment_format = .undefined,
             .view_mask = 0, // what even is this?
         };

@@ -30,9 +30,12 @@ pub fn main() !void {
 
     const filenames = [_][]const u8{
         "res/suzanne.obj",
-        "res/bunny.obj",
-        "res/brick.qoi",
-        "res/wood.qoi",
+        // "res/triangle.obj",
+        // "res/quad.obj",
+        // "res/smooth_cube.obj",
+        // "res/bunny.obj",
+        // "res/brick.qoi",
+        // "res/wood.qoi",
     };
     const resource_handle = try rl.load(&filenames);
     const resources = resource_handle.wait();
@@ -118,9 +121,9 @@ pub fn main() !void {
         vx.device.cmdBindPipeline(command_buffer, .graphics, pipeline.pipeline);
         const viewport: vk.Viewport = .{
             .x = 0,
-            .y = 0,
+            .y = @as(f32, @floatFromInt(swapchain_image.extent.height)),
             .width = @as(f32, @floatFromInt(swapchain_image.extent.width)),
-            .height = @as(f32, @floatFromInt(swapchain_image.extent.height)),
+            .height = -@as(f32, @floatFromInt(swapchain_image.extent.height)),
             .min_depth = 0,
             .max_depth = 1,
         };
@@ -144,11 +147,12 @@ pub fn main() !void {
 
         var it_models = resources.models.iterator();
         while (it_models.next()) |model| {
+            // if (std.mem.eql(u8, "res/suzanne.obj", model.key_ptr.*)) continue;
             vx.device.cmdDrawIndexed(
                 command_buffer,
                 model.value_ptr.index_count,
                 1,
-                0,
+                model.value_ptr.index_offset,
                 @intCast(model.value_ptr.vertex_offset),
                 0,
             );

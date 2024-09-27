@@ -135,7 +135,8 @@ pub fn load(rl: *ResourceLoader, filenames: []const []const u8) !BundleHandle {
             defer normals.deinit();
             defer uvs.deinit();
 
-            var vertices = std.ArrayHashMap(Vertex, u32, VertexContext, true).init(rl.alloc);
+            // var vertices = std.ArrayHashMap(Vertex, u32, VertexContext, true).init(rl.alloc);
+            var vertices = std.ArrayList(Vertex).init(rl.alloc);
             defer vertices.deinit();
 
             var it = std.mem.splitSequence(u8, bytes, "\n");
@@ -193,24 +194,24 @@ pub fn load(rl: *ResourceLoader, filenames: []const []const u8) !BundleHandle {
                             j += 1;
                         }
                         // std.debug.print("{}\n", .{v});
-                        if (vertices.get(v)) |element| {
-                            try indices.append(
-                                element + vertex_offset,
-                            );
-                        } else {
-                            const element: u32 = @intCast(vertices.count());
-                            vertices.putNoClobber(v, element) catch unreachable;
-                            try indices.append(
-                                element + vertex_offset,
-                            );
-                        }
+                        // if (vertices.get(v)) |element| {
+                        //     try indices.append(element);
+                        // } else {
+                        //     const element: u32 = @intCast(vertices.count());
+                        //     vertices.putNoClobber(v, element) catch unreachable;
+                        //     try indices.append(element);
+                        // }
+                        const element: u32 = @intCast(vertices.items.len);
+                        try vertices.append(v);
+                        try indices.append(element);
                     }
                 }
             }
 
-            std.debug.print("n_vertices {}\n", .{vertices.count()});
+            // std.debug.print("n_vertices {}\n", .{vertices.count()});
 
-            try all_vertices.appendSlice(vertices.keys());
+            // try all_vertices.appendSlice(vertices.keys());
+            try all_vertices.appendSlice(vertices.items);
             try models.put(filename, .{
                 .vertex_offset = vertex_offset,
                 .vertex_count = @as(u32, @intCast(all_vertices.items.len)) - vertex_offset,
@@ -276,13 +277,16 @@ pub fn load(rl: *ResourceLoader, filenames: []const []const u8) !BundleHandle {
     const alloc_info = vk.MemoryAllocateInfo{
         .allocation_size = cursor,
         .memory_type_index = try vx.findMemoryType(
-            vertex_buffer_memreq.memory_type_bits | index_buffer_memreq.memory_type_bits,
+            vertex_buffer_memreq.memory_type_bits & index_buffer_memreq.memory_type_bits,
             .{ .host_visible_bit = true, .host_coherent_bit = true },
         ),
     };
     std.debug.print("{}\n", .{alloc_info});
     const memory = try vx.device.allocateMemory(&alloc_info, null);
     errdefer vx.device.freeMemory(memory, null);
+
+    // for (all_vertices.items, 0..) |vertex, i| std.debug.print("{}\t{}\n", .{ i, vertex });
+    // for (indices.items, 0..) |index, i| std.debug.print("{}\t{}\n", .{ i, index });
 
     cursor = 0;
     cursor = std.mem.alignForward(usize, cursor, vertex_buffer_memreq.alignment);
