@@ -12,6 +12,10 @@ const app_name = "models";
 // - load model(s) and texture(s) form disk
 // - draw a bunch of them using multidrawindirect
 
+const ObjectData = struct {
+    mvp: [4]@Vector(4, f32),
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -33,7 +37,7 @@ pub fn main() !void {
         // "res/triangle.obj",
         // "res/quad.obj",
         // "res/smooth_cube.obj",
-        // "res/bunny.obj",
+        "res/bunny.obj",
         // "res/brick.qoi",
         // "res/wood.qoi",
     };
@@ -51,9 +55,95 @@ pub fn main() !void {
     // (could use the swapchain as a color buffer and render a fullscreen quad)
     if (!vx.swapchain_supports_transfer_dst) std.log.err("Surface must support TRANSFER_DST", .{});
 
+    // --- setup drawIndirect ---
+    var cursor: usize = 0;
+    const max_objects = 4096;
+
+    const indirect_buffer_info = vk.BufferCreateInfo{
+        .size = @sizeOf(vk.DrawIndexedIndirectCommand) * max_objects,
+        .usage = .{ .transfer_dst_bit = true, .indirect_buffer_bit = true },
+        .sharing_mode = .exclusive,
+    };
+    const indirect_buffer = try vx.device.createBuffer(&indirect_buffer_info, null);
+    defer vx.device.destroyBuffer(indirect_buffer, null);
+    const indirect_buffer_memreq = vx.device.getBufferMemoryRequirements(indirect_buffer);
+    std.debug.print("{}\n", .{indirect_buffer_memreq});
+    cursor = std.mem.alignForward(usize, cursor, indirect_buffer_memreq.alignment);
+    cursor += indirect_buffer_memreq.size;
+
+    const data_buffer_info = vk.BufferCreateInfo{
+        .size = @sizeOf(ObjectData) * max_objects,
+        .usage = .{ .transfer_dst_bit = true },
+        .sharing_mode = .exclusive,
+    };
+    const data_buffer = try vx.device.createBuffer(&data_buffer_info, null);
+    defer vx.device.destroyBuffer(data_buffer, null);
+    const data_buffer_memreq = vx.device.getBufferMemoryRequirements(data_buffer);
+    std.debug.print("{}\n", .{data_buffer_memreq});
+    cursor = std.mem.alignForward(usize, cursor, data_buffer_memreq.alignment);
+    cursor += data_buffer_memreq.size;
+
+    // seems reasonable to keep this data in host visible/coherent
+    // since we just want to refill the buffers every frame
+    // though i guess an optimal strategy would separate frequently and infrequently updated data?
+    const alloc_info = vk.MemoryAllocateInfo{
+        .allocation_size = cursor,
+        .memory_type_index = try vx.findMemoryType(
+            indirect_buffer_memreq.memory_type_bits & data_buffer_memreq.memory_type_bits,
+            .{ .host_visible_bit = true, .host_coherent_bit = true },
+        ),
+    };
+    std.debug.print("{}\n", .{alloc_info});
+    const memory = try vx.device.allocateMemory(&alloc_info, null);
+    defer vx.device.freeMemory(memory, null);
+
+    cursor = 0;
+
+    cursor = std.mem.alignForward(usize, cursor, indirect_buffer_memreq.alignment);
+    try vx.device.bindBufferMemory(indirect_buffer, memory, cursor);
+    cursor += indirect_buffer_memreq.size;
+
+    cursor = std.mem.alignForward(usize, cursor, data_buffer_memreq.alignment);
+    try vx.device.bindBufferMemory(data_buffer, memory, cursor);
+    cursor += data_buffer_memreq.size;
+    // --- end setup drawIndirect ---
+
     while (!pf.shouldClose()) {
         pf.pollEvents();
         try vx.updateSwapchain();
+
+        // --- fill drawIndirect buffers ---
+        cursor = 0;
+
+        cursor = std.mem.alignForward(usize, cursor, indirect_buffer_memreq.alignment);
+        const p_indirect: [*]vk.DrawIndexedIndirectCommand =
+            @alignCast(@ptrCast(try vx.device.mapMemory(
+            memory,
+            cursor,
+            indirect_buffer_memreq.size,
+            .{},
+        )));
+        var it_models = resources.models.iterator();
+        var i: usize = 0;
+        while (it_models.next()) |model| {
+            p_indirect[i] = vk.DrawIndexedIndirectCommand{
+                .index_count = model.value_ptr.index_count,
+                .instance_count = 1,
+                .first_index = model.value_ptr.index_offset,
+                .vertex_offset = @intCast(model.value_ptr.vertex_offset),
+                .first_instance = 0,
+            };
+            i += 1;
+        }
+        const mdi_draw_count: u32 = @intCast(i);
+        vx.device.unmapMemory(memory);
+        cursor += indirect_buffer_memreq.size;
+
+        cursor = std.mem.alignForward(usize, cursor, data_buffer_memreq.alignment);
+        // TODO model data
+        cursor += data_buffer_memreq.size;
+
+        // --- end fill drawIndirect buffers ---
 
         const frame = renderer.getFrameStuff();
         if (try vx.device.waitForFences(
@@ -145,18 +235,26 @@ pub fn main() !void {
             .uint32,
         );
 
-        var it_models = resources.models.iterator();
-        while (it_models.next()) |model| {
-            // if (std.mem.eql(u8, "res/suzanne.obj", model.key_ptr.*)) continue;
-            vx.device.cmdDrawIndexed(
-                command_buffer,
-                model.value_ptr.index_count,
-                1,
-                model.value_ptr.index_offset,
-                @intCast(model.value_ptr.vertex_offset),
-                0,
-            );
-        }
+        vx.device.cmdDrawIndexedIndirect(
+            command_buffer,
+            indirect_buffer,
+            0,
+            mdi_draw_count,
+            @sizeOf(vk.DrawIndexedIndirectCommand),
+        );
+
+        // var it_models = resources.models.iterator();
+        // while (it_models.next()) |model| {
+        //     // if (std.mem.eql(u8, "res/suzanne.obj", model.key_ptr.*)) continue;
+        //     vx.device.cmdDrawIndexed(
+        //         command_buffer,
+        //         model.value_ptr.index_count,
+        //         1,
+        //         model.value_ptr.index_offset,
+        //         @intCast(model.value_ptr.vertex_offset),
+        //         0,
+        //     );
+        // }
 
         vx.device.cmdEndRendering(command_buffer);
         // END DRAW STUFF

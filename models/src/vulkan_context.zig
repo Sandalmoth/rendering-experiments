@@ -39,7 +39,8 @@ const apis: []const vk.ApiInfo = &.{
             .cmdBeginRendering = true,
             .cmdBindVertexBuffers = true,
             .cmdBindIndexBuffer = true,
-            .cmdDrawIndexed = true,
+            // .cmdDrawIndexed = true,
+            .cmdDrawIndexedIndirect = true,
             .cmdEndRendering = true,
             .cmdPipelineBarrier2 = true,
             .cmdSetViewport = true,
@@ -99,7 +100,9 @@ const device_extensions = [_][*:0]const u8{
 const debug_device_extensions = [_][*:0]const u8{};
 
 // (i don't think there are any debug-specific features?)
-const device_features = vk.PhysicalDeviceFeatures{};
+const device_features = vk.PhysicalDeviceFeatures{
+    .multi_draw_indirect = vk.TRUE,
+};
 const device_features_1_1 = vk.PhysicalDeviceVulkan11Features{
     .p_next = @constCast(@ptrCast(&device_features_1_2)),
 };
