@@ -8,13 +8,16 @@ var current_frame: u64 = 0;
 var sync_image_acquired: [in_flight]vk.Semaphore = [_]vk.Semaphore{.null_handle} ** in_flight;
 var sync_image_released: [in_flight]vk.Semaphore = [_]vk.Semaphore{.null_handle} ** in_flight;
 var sync_image_fence: [in_flight]vk.Fence = [_]vk.Fence{.null_handle} ** in_flight;
-var command_pools: [2]vk.CommandPool = [_]vk.CommandPool{.null_handle} ** in_flight;
+var command_pools: [in_flight]vk.CommandPool = [_]vk.CommandPool{.null_handle} ** in_flight;
+var descriptor_pools: [in_flight]vk.DescriptorPool =
+    [_]vk.DescriptorPool{.null_handle} ** in_flight;
 
 const FrameStuff = struct {
     acquire: vk.Semaphore,
     release: vk.Semaphore,
     fence: vk.Fence,
     command_pool: vk.CommandPool,
+    descriptor_pool: vk.DescriptorPool,
 };
 pub fn getFrameStuff() FrameStuff {
     return .{
@@ -22,6 +25,7 @@ pub fn getFrameStuff() FrameStuff {
         .release = sync_image_released[current_frame % in_flight],
         .fence = sync_image_fence[current_frame % in_flight],
         .command_pool = command_pools[current_frame % in_flight],
+        .descriptor_pool = descriptor_pools[current_frame % in_flight],
     };
 }
 
@@ -37,6 +41,20 @@ pub fn init() !void {
             .flags = .{},
             .queue_family_index = vx.graphics_compute_queue.family,
         }, null);
+
+        const descriptor_pool_size = vk.DescriptorPoolSize{
+            .descriptor_count = 1, // i think in principle we nee just 1 pool, but in_flight here
+            .type = .storage_buffer,
+        };
+        const descriptor_pool_create_info = vk.DescriptorPoolCreateInfo{
+            .max_sets = 1,
+            .pool_size_count = 1,
+            .p_pool_sizes = @ptrCast(&descriptor_pool_size),
+        };
+        descriptor_pools[i] = try vx.device.createDescriptorPool(
+            &descriptor_pool_create_info,
+            null,
+        );
     }
 }
 
@@ -57,6 +75,10 @@ pub fn deinit() void {
         if (command_pools[i] != .null_handle) {
             vx.device.destroyCommandPool(command_pools[i], null);
             command_pools[i] = .null_handle;
+        }
+        if (descriptor_pools[i] != .null_handle) {
+            vx.device.destroyDescriptorPool(descriptor_pools[i], null);
+            descriptor_pools[i] = .null_handle;
         }
     }
 }
@@ -107,7 +129,7 @@ pub const Pipeline = struct {
     pipeline: vk.Pipeline,
     layout: vk.PipelineLayout,
 
-    pub fn create() !Pipeline {
+    pub fn create(descriptor_set_layout: vk.DescriptorSetLayout) !Pipeline {
         const vert = try loadShader("res/shaders/shader.vert.spv");
         defer vx.device.destroyShaderModule(vert, null);
         const frag = try loadShader("res/shaders/shader.frag.spv");
@@ -218,7 +240,10 @@ pub const Pipeline = struct {
             .max_depth_bounds = 0.0,
         };
 
-        const layout_info = vk.PipelineLayoutCreateInfo{};
+        const layout_info = vk.PipelineLayoutCreateInfo{
+            .set_layout_count = 1,
+            .p_set_layouts = @ptrCast(&descriptor_set_layout),
+        };
         const pipeline_layout = try vx.device.createPipelineLayout(&layout_info, null);
 
         const color_attachment_formats = [_]vk.Format{.b8g8r8a8_srgb};

@@ -3,6 +3,7 @@ const pf = @import("platform.zig");
 const vx = @import("vulkan_context.zig");
 const vk = @import("vk");
 const renderer = @import("renderer.zig");
+const zm = @import("zmath");
 
 const ResourceLoader = @import("ResourceLoader.zig");
 
@@ -12,8 +13,30 @@ const app_name = "models";
 // - load model(s) and texture(s) form disk
 // - draw a bunch of them using multidrawindirect
 
-const ObjectData = struct {
-    mvp: [4]@Vector(4, f32),
+const UP = zm.f32x4(0.0, -1.0, 0.0, 0.0);
+
+const ObjectData = extern struct {
+    mvp: zm.Mat,
+};
+
+const Camera = struct {
+    position: zm.Vec,
+    orientation: zm.Quat,
+    fov: f32,
+    aspect: f32,
+    near: f32,
+    far: f32,
+
+    fn vp(camera: Camera) zm.Mat {
+        return zm.mul(
+            zm.lookAtRh(
+                camera.position,
+                zm.rotate(camera.orientation, zm.f32x4(1.0, 0.0, 0.0, 1.0)),
+                UP,
+            ),
+            zm.perspectiveFovRh(camera.fov, camera.aspect, camera.near, camera.far),
+        );
+    }
 };
 
 pub fn main() !void {
@@ -48,7 +71,22 @@ pub fn main() !void {
     try renderer.init();
     defer renderer.deinit();
 
-    var pipeline = try renderer.Pipeline.create();
+    // we need the descriptor set layout during pipeline creation
+    const data_layout_binding = vk.DescriptorSetLayoutBinding{
+        .binding = 0,
+        .descriptor_type = .storage_buffer,
+        .descriptor_count = 1,
+        .stage_flags = .{ .vertex_bit = true },
+    };
+    const layout_create_info = vk.DescriptorSetLayoutCreateInfo{
+        .binding_count = 1,
+        .p_bindings = @ptrCast(&data_layout_binding),
+    };
+    const descriptor_set_layout =
+        try vx.device.createDescriptorSetLayout(&layout_create_info, null);
+    defer vx.device.destroyDescriptorSetLayout(descriptor_set_layout, null);
+
+    var pipeline = try renderer.Pipeline.create(descriptor_set_layout);
     defer pipeline.destroy();
 
     // basically guaranteed, and possible to work around if really needed
@@ -73,7 +111,7 @@ pub fn main() !void {
 
     const data_buffer_info = vk.BufferCreateInfo{
         .size = @sizeOf(ObjectData) * max_objects,
-        .usage = .{ .transfer_dst_bit = true },
+        .usage = .{ .transfer_dst_bit = true, .storage_buffer_bit = true },
         .sharing_mode = .exclusive,
     };
     const data_buffer = try vx.device.createBuffer(&data_buffer_info, null);
@@ -106,7 +144,18 @@ pub fn main() !void {
     cursor = std.mem.alignForward(usize, cursor, data_buffer_memreq.alignment);
     try vx.device.bindBufferMemory(data_buffer, memory, cursor);
     cursor += data_buffer_memreq.size;
+
     // --- end setup drawIndirect ---
+
+    var camera = Camera{
+        .position = zm.f32x4(10.0, 0.0, 0.0, 1.0),
+        .orientation = zm.qidentity(),
+        .fov = 70,
+        .aspect = 16 / 9, // TODO respect resize
+        .near = 0.1,
+        .far = 1000.0,
+    };
+    camera = camera;
 
     while (!pf.shouldClose()) {
         pf.pollEvents();
@@ -140,7 +189,26 @@ pub fn main() !void {
         cursor += indirect_buffer_memreq.size;
 
         cursor = std.mem.alignForward(usize, cursor, data_buffer_memreq.alignment);
-        // TODO model data
+        const p_data: [*]ObjectData = @alignCast(@ptrCast(try vx.device.mapMemory(
+            memory,
+            cursor,
+            data_buffer_memreq.size,
+            .{},
+        )));
+        it_models = resources.models.iterator();
+        i = 0;
+        while (it_models.next()) |model| {
+            _ = model;
+            p_data[i] = ObjectData{
+                .mvp = zm.mul(
+                    zm.translation(0.0, 0.0, @floatFromInt(2 * i)),
+                    camera.vp(),
+                ),
+            };
+            i += 1;
+        }
+        vx.device.unmapMemory(memory);
+        std.debug.assert(i == mdi_draw_count);
         cursor += data_buffer_memreq.size;
 
         // --- end fill drawIndirect buffers ---
@@ -155,9 +223,35 @@ pub fn main() !void {
         try vx.device.resetFences(1, @ptrCast(&frame.fence));
         const swapchain_image = vx.getNextSwapchainImage(frame.acquire) catch continue;
 
+        try vx.device.resetDescriptorPool(frame.descriptor_pool, .{});
+
+        var descriptor_set: vk.DescriptorSet = .null_handle;
+        try vx.device.allocateDescriptorSets(&.{
+            .descriptor_pool = frame.descriptor_pool,
+            .descriptor_set_count = 1,
+            .p_set_layouts = @ptrCast(&descriptor_set_layout),
+        }, @ptrCast(&descriptor_set));
+
         try vx.device.resetCommandPool(frame.command_pool, .{});
 
-        var command_buffer: vk.CommandBuffer = undefined;
+        const descriptor_buffer_info = vk.DescriptorBufferInfo{
+            .buffer = data_buffer,
+            .offset = 0,
+            .range = vk.WHOLE_SIZE,
+        };
+        const descriptor_write = vk.WriteDescriptorSet{
+            .dst_set = descriptor_set,
+            .dst_binding = 0,
+            .dst_array_element = 0,
+            .descriptor_type = .storage_buffer,
+            .descriptor_count = 1,
+            .p_buffer_info = @ptrCast(&descriptor_buffer_info),
+            .p_image_info = undefined,
+            .p_texel_buffer_view = undefined,
+        };
+        vx.device.updateDescriptorSets(1, @ptrCast(&descriptor_write), 0, null);
+
+        var command_buffer: vk.CommandBuffer = .null_handle;
         try vx.device.allocateCommandBuffers(&.{
             .command_pool = frame.command_pool,
             .level = .primary,
@@ -235,6 +329,17 @@ pub fn main() !void {
             .uint32,
         );
 
+        vx.device.cmdBindDescriptorSets(
+            command_buffer,
+            .graphics,
+            pipeline.layout,
+            0,
+            1,
+            @ptrCast(&descriptor_set),
+            0,
+            null,
+        );
+
         vx.device.cmdDrawIndexedIndirect(
             command_buffer,
             indirect_buffer,
@@ -242,19 +347,6 @@ pub fn main() !void {
             mdi_draw_count,
             @sizeOf(vk.DrawIndexedIndirectCommand),
         );
-
-        // var it_models = resources.models.iterator();
-        // while (it_models.next()) |model| {
-        //     // if (std.mem.eql(u8, "res/suzanne.obj", model.key_ptr.*)) continue;
-        //     vx.device.cmdDrawIndexed(
-        //         command_buffer,
-        //         model.value_ptr.index_count,
-        //         1,
-        //         model.value_ptr.index_offset,
-        //         @intCast(model.value_ptr.vertex_offset),
-        //         0,
-        //     );
-        // }
 
         vx.device.cmdEndRendering(command_buffer);
         // END DRAW STUFF
