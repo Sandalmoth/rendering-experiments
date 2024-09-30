@@ -22,6 +22,8 @@ pub const getInstanceProcAddress = glfwGetInstanceProcAddress;
 
 // global state section
 var window: *glfw.Window = undefined;
+var mouse_x: f32 = std.math.nan(f32);
+var mouse_y: f32 = std.math.nan(f32);
 // end global state section
 
 pub fn init(app_name: [:0]const u8, width: i32, height: i32) !void {
@@ -30,6 +32,26 @@ pub fn init(app_name: [:0]const u8, width: i32, height: i32) !void {
     glfw.windowHintTyped(.client_api, .no_api);
     window = try glfw.Window.create(width, height, app_name, null);
     _ = window.setFramebufferSizeCallback(framebufferResizeCallback);
+
+    window.setInputMode(.cursor, glfw.Cursor.Mode.disabled);
+}
+
+pub fn isDown(key: glfw.Key) bool {
+    return window.getKey(key) == .press;
+}
+
+const MouseMove = struct { dx: f32, dy: f32 };
+pub fn getMouseMove() MouseMove {
+    const mouse_pos = window.getCursorPos();
+    const xprev = mouse_x;
+    const yprev = mouse_y;
+    mouse_x = @floatCast(mouse_pos[0]);
+    mouse_y = @floatCast(mouse_pos[1]);
+    if (std.math.isNan(xprev)) return .{ .dx = 0, .dy = 0 };
+    return .{
+        .dx = mouse_x - xprev,
+        .dy = mouse_y - yprev,
+    };
 }
 
 pub fn deinit() void {

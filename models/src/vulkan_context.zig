@@ -815,6 +815,7 @@ fn pickSwapchainFormat(formats: []vk.SurfaceFormatKHR) vk.SurfaceFormatKHR {
 }
 
 fn pickSwapchainPresentMode(modes: []vk.PresentModeKHR) vk.PresentModeKHR {
+    for (modes) |mode| if (mode == .fifo_khr) return mode;
     for (modes) |mode| if (mode == .mailbox_khr) return mode;
     return vk.PresentModeKHR.fifo_khr; // guaranteed support, should be fine not to check
 }

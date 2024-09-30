@@ -13,27 +13,53 @@ const app_name = "models";
 // - load model(s) and texture(s) form disk
 // - draw a bunch of them using multidrawindirect
 
-const UP = zm.f32x4(0.0, -1.0, 0.0, 0.0);
-
 const ObjectData = extern struct {
     mvp: zm.Mat,
 };
 
+const world_up = zm.f32x4(0.0, -1.0, 0.0, 0.0);
+
 const Camera = struct {
     position: zm.Vec,
-    orientation: zm.Quat,
+    front: zm.Vec,
+    up: zm.Vec,
+    right: zm.Vec,
+
+    yaw: f32 = 0,
+    pitch: f32 = 0,
+
+    speed: zm.Vec = zm.f32x4s(1e-1),
+    sensitivity: f32 = 1e-3,
+
     fov: f32,
     aspect: f32,
     near: f32,
     far: f32,
 
+    fn updateFirstPerson(camera: *Camera, dx: f32, dy: f32) void {
+        camera.yaw -= dx * camera.sensitivity;
+        camera.pitch -= dy * camera.sensitivity;
+
+        if (camera.pitch > 0.49 * std.math.pi) {
+            camera.pitch = 0.49 * std.math.pi;
+        }
+        if (camera.pitch < -0.49 * std.math.pi) {
+            camera.pitch = -0.49 * std.math.pi;
+        }
+
+        camera.front = zm.normalize3(zm.f32x4(
+            @cos(camera.yaw) * @cos(camera.pitch),
+            @sin(camera.pitch),
+            @sin(camera.yaw) * @cos(camera.pitch),
+            0.0,
+        ));
+        camera.right = zm.normalize3(zm.cross3(camera.front, world_up));
+        camera.up = zm.normalize3(zm.cross3(camera.right, camera.front));
+    }
+
     fn vp(camera: Camera) zm.Mat {
         return zm.mul(
-            zm.lookAtRh(
-                camera.position,
-                zm.rotate(camera.orientation, zm.f32x4(1.0, 0.0, 0.0, 1.0)),
-                UP,
-            ),
+            zm.lookAtRh(camera.position, camera.position + camera.front, world_up),
             zm.perspectiveFovRh(camera.fov, camera.aspect, camera.near, camera.far),
         );
     }
@@ -149,16 +175,49 @@ pub fn main() !void {
 
     var camera = Camera{
         .position = zm.f32x4(10.0, 0.0, 0.0, 1.0),
-        .orientation = zm.qidentity(),
+        .front = zm.f32x4(-1.0, 0.0, 0.0, 0.0),
+        .up = zm.f32x4(0.0, -1.0, 0.0, 0.0),
+        .right = undefined,
         .fov = 70,
         .aspect = 16 / 9, // TODO respect resize
         .near = 0.1,
         .far = 1000.0,
     };
-    camera = camera;
+    camera.front = zm.cross3(camera.up, camera.front);
 
     while (!pf.shouldClose()) {
         pf.pollEvents();
+        if (pf.isDown(.escape)) break;
+
+        std.debug.print("{}\n", .{camera});
+        if (pf.isDown(.w)) {
+            const flat = zm.normalize3(camera.front * zm.f32x4(1.0, 0.0, 1.0, 0.0));
+            camera.position += camera.speed * flat;
+        }
+        if (pf.isDown(.s)) {
+            const flat = zm.normalize3(camera.front * zm.f32x4(1.0, 0.0, 1.0, 0.0));
+            camera.position -= camera.speed * flat;
+        }
+        // it really seems like some directions are reversed
+        // TODO review the math (or finish my own math library)
+        if (pf.isDown(.a)) {
+            const flat = zm.normalize3(camera.right * zm.f32x4(1.0, 0.0, 1.0, 0.0));
+            camera.position -= camera.speed * flat;
+        }
+        if (pf.isDown(.d)) {
+            const flat = zm.normalize3(camera.right * zm.f32x4(1.0, 0.0, 1.0, 0.0));
+            camera.position += camera.speed * flat;
+        }
+        if (pf.isDown(.space)) {
+            camera.position -= camera.speed * world_up;
+        }
+        if (pf.isDown(.c)) {
+            camera.position += camera.speed * world_up;
+        }
+        const mouse_move = pf.getMouseMove();
+        std.debug.print("{}\n", .{mouse_move});
+        camera.updateFirstPerson(mouse_move.dx, mouse_move.dy);
+
         try vx.updateSwapchain();
 
         // --- fill drawIndirect buffers ---
@@ -305,9 +364,11 @@ pub fn main() !void {
         vx.device.cmdBindPipeline(command_buffer, .graphics, pipeline.pipeline);
         const viewport: vk.Viewport = .{
             .x = 0,
-            .y = @as(f32, @floatFromInt(swapchain_image.extent.height)),
+            .y = 0,
+            // .y = @as(f32, @floatFromInt(swapchain_image.extent.height)),
             .width = @as(f32, @floatFromInt(swapchain_image.extent.width)),
-            .height = -@as(f32, @floatFromInt(swapchain_image.extent.height)),
+            .height = @as(f32, @floatFromInt(swapchain_image.extent.height)),
+            // .height = -@as(f32, @floatFromInt(swapchain_image.extent.height)),
             .min_depth = 0,
             .max_depth = 1,
         };
